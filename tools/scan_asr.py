@@ -1,7 +1,7 @@
 """批量体检转写结果：抓 whisper 幻觉、无人声素材、句数异常。
 
 用法：
-  python tools/scan_asr.py                 # 扫 work/ 下全部工单
+  python tools/scan_asr.py                 # 扫 config.media_roots 下全部工单的 temp/
   python tools/scan_asr.py bz_ buv_        # 只扫指定前缀
 """
 import json
@@ -9,7 +9,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-WORK = ROOT / "work"
+sys.path.insert(0, str(ROOT))
+
+from pipeline.config import iter_job_dirs, load_config  # noqa: E402
 
 # whisper 在静音/纯音乐上最常吐出来的模板句（中文训练集水印 + 北欧语水印）
 HALLUC = [
@@ -22,7 +24,7 @@ HALLUC = [
 def main() -> None:
     prefixes = sys.argv[1:] or [""]
     rows = []
-    for wd in sorted(WORK.iterdir()):
+    for wd in iter_job_dirs(load_config()):
         if not (wd / "02_asr" / "asr.json").is_file():
             continue
         if prefixes != [""] and not any(wd.name.startswith(p) for p in prefixes):

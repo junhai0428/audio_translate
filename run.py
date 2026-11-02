@@ -96,7 +96,7 @@ def parse_stages(text: str) -> list:
     return nums or list(STAGES)
 
 
-def collect_medias(inputs: list, exts: list) -> list:
+def collect_medias(inputs: list, exts: list, temp_name: str = "temp") -> list:
     found = []
     for item in inputs:
         p = Path(item)
@@ -107,11 +107,14 @@ def collect_medias(inputs: list, exts: list) -> list:
         elif p.is_file() and p.suffix.lower() in exts:
             found.append(p)
     # 跳过派生文件：_人声/_背景声/_越南语配音 是我们自己的产物；
-    # *_clean 是擦字幕版，若同目录有原版则只处理原版（音轨完全相同）
+    # *_clean 是擦字幕版，若同目录有原版则只处理原版（音轨完全相同）；
+    # temp/ 下是中间产物（含配音 mp3/wav），一律不当作素材
     pruned = []
     for f in found:
         stem = f.stem
         if any(m in stem for m in ("_人声", "_背景声", "_越南语配音")):
+            continue
+        if any(par.name.lower() == temp_name.lower() for par in f.parents):
             continue
         if stem.endswith("_clean") and f.with_name(stem[:-6] + f.suffix).exists():
             continue
@@ -220,8 +223,6 @@ def preflight(cfg: dict, stages: list) -> list:
         warn.append("ffmpeg 不可用，请把 ffmpeg 加入 PATH")
     if 3 in stages and cfg.get("translate", {}).get("enabled", True) and not llm_key(cfg):
         warn.append("第 3 步（翻译）缺少 LLM api_key（config.json → translate.api_key 或环境变量 VIDTRANS_LLM_KEY）")
-    if 4 in stages and not (Path(cfg["dirs"]["work"])):
-        warn.append("work 目录不存在")
     return warn
 
 
@@ -232,26 +233,28 @@ def main() -> int:
     reconfigure_stdout()
     parser = argparse.ArgumentParser(description="批量中→越语音本地化调度器（纯音频链路）")
     parser.add_argument("-i", "--input", action="append", default=None,
-                        help="音频目录或文件，可多次指定；默认 config.dirs.input")
+                        help="素材/产品目录或文件，可多次指定（默认 config.dirs.input，未配置则必填）")
     parser.add_argument("-j", "--jobs", type=int, default=None, help="并行音频数（默认 config.run.jobs=1）")
     parser.add_argument("--stages", default=None, help="阶段，如 1,2,3 或 1-3，默认全部")
     parser.add_argument("--force", action="store_true", help="忽略断点，强制重跑")
     parser.add_argument("--limit", type=int, default=0, help="最多处理几个音频")
     parser.add_argument("--list", action="store_true", help="只列出待处理音频")
     parser.add_argument("-c", "--config", default=None, help="配置文件名")
-    parser.add_argument("--prefix", default="", help="工单目录名前缀（不同素材目录有同名文件时用，如 bz_）")
+    parser.add_argument("--prefix", default="", help="工单目录名前缀（默认不需要：temp 归属各自素材目录）")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     stages = parse_stages(args.stages) if args.stages else list(cfg.get("run", {}).get("stages", list(STAGES)))
     jobs = int(args.jobs or cfg.get("run", {}).get("jobs", 1))
-    inputs = args.input or [cfg["dirs"]["input"]]
-    medias = collect_medias(inputs, [e.lower() for e in cfg.get("audio_exts", [".mp3", ".wav"])])
+    temp_name = str(cfg["dirs"]["temp"])
+    inputs = args.input or ([cfg["dirs"]["input"]] if cfg["dirs"].get("input") else [])
+    medias = collect_medias(inputs, [e.lower() for e in cfg.get("audio_exts", [".mp3", ".wav"])], temp_name)
 
     if args.limit:
         medias = medias[: args.limit]
     if not medias:
-        log(f"未找到音频。把音频放进 {cfg['dirs']['input']}，或用 -i 指定目录。")
+        log("未找到素材。用 -i 指定素材/产品目录，例如："
+            "-i \"E:/001.TTS/000视频素材/01.八珍足贴\"")
         return 1
     if args.list:
         for v in medias:

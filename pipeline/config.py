@@ -36,11 +36,35 @@ def load_config(path=None) -> dict:
     else:
         cfg = read_json(project_root() / DEFAULT_CONFIG_NAME, {}) or {}
     cfg = _deep_merge(_DEFAULTS, cfg)
-    root = project_root()
-    for key in ("input", "work", "output"):
-        cfg["dirs"][key] = str((root / cfg["dirs"][key]).resolve())
-    cfg["_root"] = str(root)
+    cfg["dirs"] = dict(cfg.get("dirs") or {})
+    # 中间产物目录名：落在**素材目录**下（<素材目录>/temp/<工单>/），不再集中到项目根
+    cfg["dirs"]["temp"] = str(cfg["dirs"].get("temp") or "temp")
+    cfg["_root"] = str(project_root())
     return cfg
+
+
+def iter_job_dirs(cfg: dict, roots=None) -> list:
+    """扫描素材目录下的 <temp>/<工单> 目录（新目录规范）。"""
+    temp_name = str(cfg.get("dirs", {}).get("temp", "temp")).lower()
+    roots = roots or cfg.get("media_roots") or []
+    out = []
+    for r in roots:
+        rp = Path(r)
+        if not rp.is_dir():
+            continue
+        # 只认「<素材目录>/temp」两层，不深入 temp 内部（里面有 demucs 中间目录）
+        cands = [p for p in list(rp.glob(f"*/{temp_name}")) + list(rp.glob(temp_name)) if p.is_dir()]
+        for t in sorted(set(cands)):
+            out += sorted(p for p in t.iterdir() if p.is_dir())
+    return out
+
+
+def job_dir(cfg: dict, name: str, roots=None):
+    """按工单名找中间产物目录。"""
+    for d in iter_job_dirs(cfg, roots):
+        if d.name == name:
+            return d
+    return None
 
 
 def llm_key(cfg: dict) -> str:
@@ -85,11 +109,12 @@ class Job:
         self.media = Path(media)
         self.cfg = cfg
         # base：源文件基名，用于产物文件名（落到源目录时保持原名）
-        # name：工单目录名，可带前缀避免不同素材目录的编号撞车
+        # name：工单目录名（中间产物目录，同一素材目录内不能重名）
         self.base = self.media.stem
         self.name = name or self.base
-        self.work = ensure_dir(Path(cfg["dirs"]["work"]) / self.name)
-        self.out_dir = ensure_dir(Path(cfg["dirs"]["output"]) / self.name)
+        self.site = self.media.parent                     # 素材/产品目录
+        self.work = ensure_dir(self.site / str(cfg["dirs"]["temp"]) / self.name)
+        self.out_dir = self.site                          # 交付物直接落素材目录
         self.state_path = self.work / "state.json"
         self.state = read_json(self.state_path, {"media": str(self.media), "stages": {}}) or {}
 
@@ -134,8 +159,13 @@ class Job:
 
     @property
     def deliverable(self) -> Path:
-        """最终交付物：越南语配音轨。"""
-        return self.out_dir / f"{self.base}_vi_voice.mp3"
+        """最终交付物：越南语配音轨，直接放视频同目录。"""
+        return self.out_dir / f"{self.base}_越南语配音.mp3"
+
+    @property
+    def bgm_deliverable(self) -> Path:
+        """交付物 2：纯 BGM 轨，直接放视频同目录。"""
+        return self.out_dir / f"{self.base}_背景声.mp3"
 
     # ---------- 状态 ----------
     def mark(self, stage: int, ok: bool, **info) -> None:

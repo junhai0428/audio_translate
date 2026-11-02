@@ -1,7 +1,9 @@
-# 中间产物与素材（体积大，不入库）
+# 项目目录只放代码：素材/中间产物/交付物全部跟着素材目录走
+temp/
 work/
 output/
 input/
+reports/
 __pycache__/
 *.pyc
 .workbuddy/

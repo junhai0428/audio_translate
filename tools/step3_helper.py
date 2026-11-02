@@ -139,7 +139,8 @@ def cmd_todo(work_dirs) -> None:
         total += len(data["segments"])
         for s in data["segments"]:
             lines.append(f"{wd.name}|{s['id']}|{s['max_syl']}|{s['zh']}")
-    out = ROOT / "work" / "_zh_all.txt"
+    out = ROOT / "reports" / "_zh_all.txt"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"待翻译 {len(work_dirs)} 条 / {total} 句 → {out}")
 

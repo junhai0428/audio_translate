@@ -15,17 +15,21 @@
 | 中文校对 + 越南语翻译 + 音节预算控长 | **成片合成** —— 配音轨交给下游视频侧 |
 | edge-TTS 并行合成 + 逐句锚定原时间轴 | 视频编码/转码 |
 
-输入：`mp3 / wav / m4a / aac / flac / ogg / opus / wma`
-输出：`output/<名>/<名>_vi_voice.mp3`
+输入：素材目录下的 `mp4 / mov / mkv` 或 `mp3 / wav / m4a / aac / flac / ogg / opus / wma`
+输出（直接落**素材目录**，与视频同目录）：
+- `<名>_越南语配音.mp3` —— 越南语人声轨（主交付）
+- `<名>_背景声.mp3` —— 纯 BGM 轨
+
+其余全是中间产物，统一放 `<素材目录>/temp/<工单>/`。
 
 ## 二、四步干什么、按什么顺序
 
 | 顺序 | 干什么 | 输入 | 产物 |
 |---|---|---|---|
-| 第 1 步 | **人声分离** —— demucs 拆出纯口播和 BGM | 源音频 | `01_separate/<名>.mp3`、`<名>_bgm.mp3` |
+| 第 1 步 | **人声分离** —— demucs 拆出纯口播和 BGM | 源音频 | `01_separate/<名>.mp3`、`<名>_bgm.mp3`（temp 内），并交付 `<名>_背景声.mp3` |
 | 第 2 步 | **语音转写** —— 逐句 ASR + F0 判男女 | 第 1 步人声轨 | `02_asr/asr.json`、`asr.srt` |
 | 第 3 步 | **翻译控长** —— 中文校对、译越南语、压到音节预算内 | 第 2 步 asr.json | `03_translate/zh_opt.txt`、`vi.txt`、`segments_vi.json` |
-| 第 4 步 | **配音对齐** —— TTS 合成，逐句锚定原起点 | 第 3 步 segments_vi.json | `04_voice/<名>_vi_voice.mp3/.wav` |
+| 第 4 步 | **配音对齐** —— TTS 合成，逐句锚定原起点 | 第 3 步 segments_vi.json | `04_voice/<名>_vi_voice.mp3/.wav`（temp 内），并交付 `<名>_越南语配音.mp3` |
 
 ```
 源音频 → ① 分离人声 → ② 逐句转写+性别 → ③ 校对翻译控长 → ④ 配音对齐 → 越南语配音轨
@@ -87,32 +91,49 @@
 ├── pipeline/                separate / asr / translate / tts
 ├── tools/step3_helper.py    第 3 步辅助：超长句切分 + 合稿算预算
 ├── tools/acceptance.py      调度验收：时长/峰值/起句对齐/字符残留
-├── tools/export_bundle.py   打包导出：全套产物复制到源视频所在文件夹
+├── tools/export_bundle.py   补齐交付 + 清理旧规范残留文件
+├── tools/migrate_layout.py  一次性迁移：work/output → 素材目录 temp（历史遗留，可删）
 ├── run.py                   批量调度（断点续跑、并行、心跳）
-├── config.json              全部参数（audio_exts / stages = 1..4）
+├── config.json              全部参数（audio_exts / stages = 1..4 / media_roots）
 ├── README.md                ← 本文档（唯一说明书）
-└── input/ work/ output/     输入音频 / 中间产物 / 交付配音轨
+└── reports/                 分析报告（音节预算清单等，可随时删）
 ```
 
-工作目录约定：`work/<音频名>/01_separate|02_asr|03_translate|04_voice/`
+**项目目录只放代码**，不落任何素材/中间产物/交付物。布局全部跟着素材走：
+
+```
+<素材目录>/
+├── douyin_012.mp4                源素材
+├── douyin_012_背景声.mp3         交付物 1：纯 BGM
+├── douyin_012_越南语配音.mp3     交付物 2：越南语人声轨
+└── temp/                         中间产物（可整目录删除重跑）
+    └── douyin_012/
+        ├── 01_separate/          人声 + BGM
+        ├── 02_asr/               asr.json / srt
+        ├── 03_translate/         中文稿 / 越南语稿 / segments_vi.json
+        ├── 04_voice/             配音 mp3 + wav + 逐句台账
+        ├── state.json            断点信息
+        └── run.log
+```
+
+工单名 = 素材文件基名（不带任何前缀）；`temp/` 归属各自素材目录，所以不同产品目录的 `douyin_051` 互不干扰。
 
 ## 五、快速开始
 
 ```bash
-# 把音频放进 input/，或直接指定目录
-E:/Projects/whisper_env/Scripts/python.exe run.py
-E:/Projects/whisper_env/Scripts/python.exe run.py -i "E:/素材/0715" --jobs 2
+# 指定素材目录（整目录批量，temp/ 会被自动跳过）
+E:/Projects/whisper_env/Scripts/python.exe run.py -i "E:/001.TTS/000视频素材/01.八珍足贴" --jobs 2
 
 # 先出文案人工审核，确认后再配音
-E:/Projects/whisper_env/Scripts/python.exe run.py --stages 1,2,3
-E:/Projects/whisper_env/Scripts/python.exe run.py --stages 4
+E:/Projects/whisper_env/Scripts/python.exe run.py -i "<素材目录>" --stages 1,2,3
+E:/Projects/whisper_env/Scripts/python.exe run.py -i "<素材目录>" --stages 4
 
 # 只跑某个文件、重做某一步
-E:/Projects/whisper_env/Scripts/python.exe run.py -i a.mp3
-E:/Projects/whisper_env/Scripts/python.exe run.py --force --stages 4
+E:/Projects/whisper_env/Scripts/python.exe run.py -i "<素材目录>/douyin_051.mp4"
+E:/Projects/whisper_env/Scripts/python.exe run.py -i "<素材目录>" --force --stages 4
 ```
 
-产物：`work/<名>/01..04/`，交付 `output/<名>/<名>_vi_voice.mp3`（中越文稿在 `work/<名>/03_translate/`）。
+产物：中间件在 `<素材目录>/temp/<名>/01..04/`，交付 `<名>_背景声.mp3` 和 `<名>_越南语配音.mp3` 直接落素材目录。
 
 单独调某一步：
 
@@ -128,33 +149,41 @@ print(run_stage(job, log_fn=print))
 
 `pipeline.separate` / `pipeline.asr` / `pipeline.translate` / `pipeline.tts` 依次对应第 1–4 步。
 
-### 导出到源视频所在文件夹
+### 补齐交付 / 清理残留
+
+第 1、4 步跑完就会自动交付，一般不需要手动导出。中断过、或从旧版本升级上来时用它补齐：
 
 ```bash
-E:/Projects/whisper_env/Scripts/python.exe tools/export_bundle.py            # work/ 下所有工单
-E:/Projects/whisper_env/Scripts/python.exe tools/export_bundle.py douyin_051 # 指定工单
-E:/Projects/whisper_env/Scripts/python.exe tools/export_bundle.py --extra    # 附带校对说明 + 时间轴 json
+E:/Projects/whisper_env/Scripts/python.exe tools/export_bundle.py              # 扫 config.media_roots 全量
+E:/Projects/whisper_env/Scripts/python.exe tools/export_bundle.py douyin_051   # 指定工单
+E:/Projects/whisper_env/Scripts/python.exe tools/export_bundle.py --dry        # 只看要做什么
 ```
 
-以 `douyin_051` 为例，产物落在源 `douyin_051.mp3` 同一目录（文件名带后缀，**不会覆盖源音频**）：
+素材目录里**只应存在两个派生文件**：
 
 | 文件 | 来源 |
 |---|---|
-| `douyin_051_人声.mp3` | 第 1 步 纯人声 |
 | `douyin_051_背景声.mp3` | 第 1 步 纯 BGM |
-| `douyin_051_中文.txt` | 第 3 步 校对后中文（带时间轴） |
-| `douyin_051_越南语.txt` | 第 3 步 越南语（带时间轴） |
 | `douyin_051_越南语配音.mp3` | 第 4 步 配音轨 |
+
+脚本会顺手删掉旧规范留下的 `_人声.mp3` / `_中文.txt` / `_越南语.txt` / `_校对说明.md` / `_时间轴.json`。
 
 ### 第 3 步没有 api_key 时（默认路径）
 
 `translate.py` 需要 api_key，没有就报"未配置 LLM api_key"。此时**由第 3 步角色（LLM 本人）直接翻译**，不走任何外部接口：
 
 ```bash
-E:/Projects/whisper_env/Scripts/python.exe tools/step3_helper.py split  work/<名>   # 超长句切分 → zh_split.json
-# 角色校对中文 + 翻译越南语，写成 work/<名>/03_translate/_translated.json：[{"id":1,"zh":"...","vi":"..."}]
-E:/Projects/whisper_env/Scripts/python.exe tools/step3_helper.py build work/<名>   # 合稿 → segments_vi.json/zh_opt.txt/vi.txt + 预算校验
-E:/Projects/whisper_env/Scripts/python.exe run.py -i <源音频> --stages 4           # 配音
+# <工单目录> 形如 "<素材目录>/temp/douyin_051"
+E:/Projects/whisper_env/Scripts/python.exe tools/step3_helper.py split  "<工单目录>"   # 超长句切分 → zh_split.json
+# 角色校对中文 + 翻译越南语，写成 <工单目录>/03_translate/_translated.json：[{"id":1,"zh":"...","vi":"..."}]
+E:/Projects/whisper_env/Scripts/python.exe tools/step3_helper.py build "<工单目录>"   # 合稿 → segments_vi.json/zh_opt.txt/vi.txt + 预算校验
+E:/Projects/whisper_env/Scripts/python.exe run.py -i "<源素材>" --stages 4             # 配音
+
+# 辅助检查（都按 config.media_roots 自动找 temp/）
+E:/Projects/whisper_env/Scripts/python.exe tools/check_len.py       # 音节超长句 → reports/_over_len.txt
+E:/Projects/whisper_env/Scripts/python.exe tools/acceptance.py      # 全量验收：时长/峰值/逐句有声/字符残留
+E:/Projects/whisper_env/Scripts/python.exe tools/scan_asr.py        # 幻觉/无人声体检
+E:/Projects/whisper_env/Scripts/python.exe tools/show_asr.py <工单名>
 ```
 
 ## 六、三个硬约束
@@ -175,10 +204,12 @@ E:/Projects/whisper_env/Scripts/python.exe run.py -i <源音频> --stages 4     
 | CPU 路线（无 GPU 时的退路）65s 音频约 **141 秒**（约 2.2 倍实时） | 实测，比 GPU 慢约 20 倍 |
 | 两轨分离命令 | `--two-stems=vocals -n htdemucs --other-method minus -d cuda` |
 | **不设离线时每次启动要 60~90s** | demucs 会 HEAD huggingface.co 校验模型，国内超时重试。`config.json → hf_offline` 注入 `HF_HUB_OFFLINE=1` |
+| **伴奏文件名随 `--other-method` 变** | `minus` → `minus_vocals.wav`；默认 `none` → `no_vocals.wav`。只认后者会永远走"静音占位"分支，BGM 全变空文件（2026-11-02 已修） |
 
 **不做视频抽轨**：音视频分离由用户侧工具完成，交给这一步的就是音频。收到视频文件请退回上游，不要自己转（会引入二次编码，且不在本链路职责内）。解码命令带 `-vn` 只是为了万一误传视频也能解出音轨。
 
 **验收硬指标**：人声轨 F0 有效帧占比 > 25%（说明真有人说话）；峰值 ≤ -0.5dBFS 无削波；时长与源差 ≤ 0.2s；前后中抽 3 段各 5 秒听，无伴奏旋律残留。
+**BGM 轨**必须实测 RMS（阈值 -60dB）：低于阈值只有两种合法原因——素材本身无伴奏，或该条是纯口播；其余情况一律当 bug 查，不要直接交付空轨。
 
 **下游打回信号**：第 2 步反馈"识别出歌词/大面积乱码" → 分离不净，换 `--shifts 2 --overlap 0.5` 或 `mdx_extra` 模型重做。
 
@@ -320,7 +351,7 @@ max_syl = round((slot - 0.2) * 3.2)      # 3.2 音节/秒
 
 ## 十二、下游：配音轨怎么合回画面
 
-本项目只出 `_vi_voice.mp3`。合成由下游视频侧做，标准做法（无字幕画面 + 越南语配音 + 原 BGM）：
+本项目出 `<名>_越南语配音.mp3` 与 `<名>_背景声.mp3`。合成由下游视频侧做，标准做法（无字幕画面 + 越南语配音 + 原 BGM）：
 
 ```bash
 ffmpeg -y -i <无字幕视频> -i <vi_voice.mp3> -i <原BGM.mp3> \

@@ -7,11 +7,16 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
+from pipeline.config import job_dir, load_config  # noqa: E402
+
+cfg = load_config()
 for name in sys.argv[1:]:
-    p = ROOT / "work" / name / "02_asr" / "asr.json"
-    if not p.exists():
-        print(f"=== {name}: 缺 asr.json")
+    wd = job_dir(cfg, name)
+    p = (wd / "02_asr" / "asr.json") if wd else None
+    if p is None or not p.is_file():
+        print(f"=== {name}: 缺 asr.json（未找到 temp/{name}）")
         continue
     d = json.loads(p.read_text(encoding="utf-8"))
     print(f"=== {name}  dur={d.get('duration')}  segs={len(d.get('segments', []))}  "

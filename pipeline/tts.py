@@ -243,7 +243,7 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
 
     sf.write(str(out_wav), np.stack([track, track], axis=1), sr, subtype="PCM_16")
     run([FFMPEG, "-y", "-v", "error", "-i", str(out_wav), "-c:a", "libmp3lame", "-b:a", "192k", str(out_mp3)], quiet=True)
-    # 交付物落到 output/<名>/<名>_vi_voice.mp3
+    # 交付物直接落视频同目录：<名>_越南语配音.mp3
     import shutil
 
     shutil.copy2(out_mp3, job.deliverable)

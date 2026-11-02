@@ -1,7 +1,7 @@
 """逐句测人声能量，用来区分「真实口播」和「whisper 在静音段吐出的幻觉句」。
 
 用法：python tools/seg_energy.py bz_ buv_     # 按工单前缀批量
-输出：work/_energy.txt（工单|句号|起止|RMS|nsp|文本）
+输出：reports/_energy.txt（工单|句号|起止|RMS|nsp|文本）
 """
 import json
 import sys
@@ -11,9 +11,12 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-WORK = ROOT / "work"
+sys.path.insert(0, str(ROOT))
+
+from pipeline.config import iter_job_dirs, load_config  # noqa: E402
+
 SR = 16000
-OUT = WORK / "_energy.txt"
+OUT = ROOT / "reports" / "_energy.txt"
 
 
 def rms_db(chunk: np.ndarray) -> float:
@@ -25,7 +28,7 @@ def rms_db(chunk: np.ndarray) -> float:
 def main() -> None:
     prefixes = sys.argv[1:] or [""]
     lines = []
-    for wd in sorted(WORK.iterdir()):
+    for wd in iter_job_dirs(load_config()):
         if prefixes != [""] and not any(wd.name.startswith(p) for p in prefixes):
             continue
         wav = wd / "02_asr" / "asr_input_16k.wav"
@@ -41,6 +44,7 @@ def main() -> None:
                 f"{wd.name}|{s['id']}|{s['start']:.2f}-{s['end']:.2f}|{rms_db(data[a:b]):.1f}"
                 f"|nsp={s['no_speech_prob']}|{s['text']}"
             )
+    OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text("\n".join(lines), encoding="utf-8")
     vals = [float(l.split("|")[3]) for l in lines]
     print(f"共 {len(lines)} 句 → {OUT}")
