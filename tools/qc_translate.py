@@ -56,7 +56,8 @@ def check_job(wd: Path, site: str) -> tuple[list, dict]:
             if w in low:
                 issues.append((site, wd.name, sid, f"合规禁词 {w}", zh, vi))
         vi_digits = re.sub(r"\D", "", vi)
-        zh_nums = {x for x in NUM.findall(zh.replace(",", "")) if len(x) >= 2 or float(x) >= 2}
+        zh_nums = {re.sub(r"\D", "", x) for x in NUM.findall(zh)}
+        zh_nums = {x for x in zh_nums if len(x) >= 2 or (x and int(x) >= 2)}
         miss = [x for x in zh_nums if x not in vi_digits]
         if miss:
             issues.append((site, wd.name, sid, f"数字缺失 {miss}", zh, vi))

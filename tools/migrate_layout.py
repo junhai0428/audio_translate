@@ -3,11 +3,11 @@
 旧布局（v1）：
   项目/work/<工单>/<阶段目录>/...        中间产物
   项目/output/<工单>/<名>_vi_voice.mp3   配音交付
-  素材目录/<名>_人声.mp3 / _背景声.mp3 / _中文.txt / _越南语.txt / _越南语配音.mp3
+  素材目录/<名>_人声.mp3 / _BGM.mp3 / _中文.txt / _越南语.txt / _vi.mp3
 
 新布局（v2）：
-  素材目录/<名>_背景声.mp3               交付物 1
-  素材目录/<名>_越南语配音.mp3           交付物 2
+  素材目录/<名>_BGM.mp3               交付物 1
+  素材目录/<名>_vi.mp3           交付物 2
   素材目录/temp/<工单>/<阶段目录>/...    其余全部是中间产物
 
 用法：python tools/migrate_layout.py [--apply]     # 默认 dry-run
@@ -56,9 +56,9 @@ def main() -> None:
         moved += 1
 
         # 交付物：bgm / 配音（优先 work 内，其次旧 output）
-        for src, name in ((wd / "01_separate" / f"{base}_bgm.mp3", f"{base}_背景声.mp3"),
-                          (wd / "04_voice" / f"{base}_vi_voice.mp3", f"{base}_越南语配音.mp3"),
-                          (OUTPUT / wd.name / f"{base}_vi_voice.mp3", f"{base}_越南语配音.mp3")):
+        for src, name in ((wd / "01_separate" / f"{base}_bgm.mp3", f"{base}_BGM.mp3"),
+                          (wd / "04_voice" / f"{base}_vi_voice.mp3", f"{base}_vi.mp3"),
+                          (OUTPUT / wd.name / f"{base}_vi_voice.mp3", f"{base}_vi.mp3")):
             target = site / name
             if src.is_file() and not target.is_file():
                 plans.append(("copy", str(src), f"→ {target.name}"))
@@ -87,9 +87,9 @@ def main() -> None:
             continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(wd), str(dst))
-        for src, name in ((dst / "01_separate" / f"{base}_bgm.mp3", f"{base}_背景声.mp3"),
-                          (dst / "04_voice" / f"{base}_vi_voice.mp3", f"{base}_越南语配音.mp3"),
-                          (OUTPUT / wd.name / f"{base}_vi_voice.mp3", f"{base}_越南语配音.mp3")):
+        for src, name in ((dst / "01_separate" / f"{base}_bgm.mp3", f"{base}_BGM.mp3"),
+                          (dst / "04_voice" / f"{base}_vi_voice.mp3", f"{base}_vi.mp3"),
+                          (OUTPUT / wd.name / f"{base}_vi_voice.mp3", f"{base}_vi.mp3")):
             target = site / name
             if src.is_file() and not target.is_file():
                 shutil.copy2(src, target)

@@ -17,8 +17,8 @@
 
 输入：素材目录下的 `mp4 / mov / mkv` 或 `mp3 / wav / m4a / aac / flac / ogg / opus / wma`
 输出（直接落**素材目录**，与视频同目录）：
-- `<名>_越南语配音.mp3` —— 越南语人声轨（主交付）
-- `<名>_背景声.mp3` —— 纯 BGM 轨
+- `<名>_vi.mp3` —— 越南语人声轨（主交付）
+- `<名>_BGM.mp3` —— 纯 BGM 轨
 
 其余全是中间产物，统一放 `<素材目录>/temp/<工单>/`。
 
@@ -26,10 +26,10 @@
 
 | 顺序 | 干什么 | 输入 | 产物 |
 |---|---|---|---|
-| 第 1 步 | **人声分离** —— demucs 拆出纯口播和 BGM | 源音频 | `01_separate/<名>.mp3`、`<名>_bgm.mp3`（temp 内），并交付 `<名>_背景声.mp3` |
+| 第 1 步 | **人声分离** —— demucs 拆出纯口播和 BGM | 源音频 | `01_separate/<名>.mp3`、`<名>_bgm.mp3`（temp 内），并交付 `<名>_BGM.mp3` |
 | 第 2 步 | **语音转写** —— 逐句 ASR + F0 判男女 | 第 1 步人声轨 | `02_asr/asr.json`、`asr.srt` |
 | 第 3 步 | **翻译控长** —— 中文校对、译越南语、压到音节预算内 | 第 2 步 asr.json | `03_translate/zh_opt.txt`、`vi.txt`、`segments_vi.json` |
-| 第 4 步 | **配音对齐** —— TTS 合成，逐句锚定原起点 | 第 3 步 segments_vi.json | `04_voice/<名>_vi_voice.mp3/.wav`（temp 内），并交付 `<名>_越南语配音.mp3` |
+| 第 4 步 | **配音对齐** —— TTS 合成，逐句锚定原起点 | 第 3 步 segments_vi.json | `04_voice/<名>_vi_voice.mp3/.wav`（temp 内），并交付 `<名>_vi.mp3` |
 
 ```
 源音频 → ① 分离人声 → ② 逐句转写+性别 → ③ 校对翻译控长 → ④ 配音对齐 → 越南语配音轨
@@ -104,8 +104,8 @@
 ```
 <素材目录>/
 ├── douyin_012.mp4                源素材
-├── douyin_012_背景声.mp3         交付物 1：纯 BGM
-├── douyin_012_越南语配音.mp3     交付物 2：越南语人声轨
+├── douyin_012_BGM.mp3         交付物 1：纯 BGM
+├── douyin_012_vi.mp3     交付物 2：越南语人声轨
 └── temp/                         中间产物（可整目录删除重跑）
     └── douyin_012/
         ├── 01_separate/          人声 + BGM
@@ -133,7 +133,7 @@ E:/Projects/whisper_env/Scripts/python.exe run.py -i "<素材目录>/douyin_051.
 E:/Projects/whisper_env/Scripts/python.exe run.py -i "<素材目录>" --force --stages 4
 ```
 
-产物：中间件在 `<素材目录>/temp/<名>/01..04/`，交付 `<名>_背景声.mp3` 和 `<名>_越南语配音.mp3` 直接落素材目录。
+产物：中间件在 `<素材目录>/temp/<名>/01..04/`，交付 `<名>_BGM.mp3` 和 `<名>_vi.mp3` 直接落素材目录。
 
 单独调某一步：
 
@@ -163,8 +163,8 @@ E:/Projects/whisper_env/Scripts/python.exe tools/export_bundle.py --dry        #
 
 | 文件 | 来源 |
 |---|---|
-| `douyin_051_背景声.mp3` | 第 1 步 纯 BGM |
-| `douyin_051_越南语配音.mp3` | 第 4 步 配音轨 |
+| `douyin_051_BGM.mp3` | 第 1 步 纯 BGM |
+| `douyin_051_vi.mp3` | 第 4 步 配音轨 |
 
 脚本会顺手删掉旧规范留下的 `_人声.mp3` / `_中文.txt` / `_越南语.txt` / `_校对说明.md` / `_时间轴.json`。
 
@@ -363,7 +363,7 @@ target  = min(max_syl, 中文音节数 × 1.2)   # 建议长度，喂给模型
 
 ## 十二、下游：配音轨怎么合回画面
 
-本项目出 `<名>_越南语配音.mp3` 与 `<名>_背景声.mp3`。合成由下游视频侧做，标准做法（无字幕画面 + 越南语配音 + 原 BGM）：
+本项目出 `<名>_vi.mp3` 与 `<名>_BGM.mp3`。合成由下游视频侧做，标准做法（无字幕画面 + 越南语配音 + 原 BGM）：
 
 ```bash
 ffmpeg -y -i <无字幕视频> -i <vi_voice.mp3> -i <原BGM.mp3> \

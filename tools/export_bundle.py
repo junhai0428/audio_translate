@@ -2,8 +2,8 @@
 
 目录规范（新）：
   <素材目录>/<视频>.mp4
-  <素材目录>/<视频>_背景声.mp3        ← 交付物 1（纯 BGM）
-  <素材目录>/<视频>_越南语配音.mp3    ← 交付物 2（越南语人声轨）
+  <素材目录>/<视频>_BGM.mp3        ← 交付物 1（纯 BGM）
+  <素材目录>/<视频>_vi.mp3    ← 交付物 2（越南语人声轨）
   <素材目录>/temp/<工单>/...          ← 其余全是中间产物
 
 用法：
@@ -49,8 +49,8 @@ def export_one(wd: Path, dry: bool = False) -> bool:
         return False
 
     pairs = [
-        (wd / "01_separate" / f"{base}_bgm.mp3", site / f"{base}_背景声.mp3"),
-        (wd / "04_voice" / f"{base}_vi_voice.mp3", site / f"{base}_越南语配音.mp3"),
+        (wd / "01_separate" / f"{base}_bgm.mp3", site / f"{base}_BGM.mp3"),
+        (wd / "04_voice" / f"{base}_vi_voice.mp3", site / f"{base}_vi.mp3"),
     ]
     done, missing = [], []
     for src, dst in pairs:

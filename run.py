@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -27,6 +28,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
+
+# 源素材命名：douyin_012 / bz_051 / 012（只允许"前缀_编号"或纯编号）
+_SOURCE_STEM = re.compile(r"^([A-Za-z0-9\u4e00-\u9fff]+_)?\d+$")
 
 
 # ---------------------------------------------------------------- 线程/进度环境
@@ -97,37 +101,36 @@ def parse_stages(text: str) -> list:
 
 
 def collect_medias(inputs: list, exts: list, temp_name: str = "temp") -> list:
+    """收集源素材。只认 `名字_编号.扩展名`（douyin_012.mp4 / bz_051.mp3 / 012.mp4）。
+
+    素材目录里常年混着历史产物：_nosub/_clean/_cfr 转码版、_vi/_BGM/_背景 音轨、
+    花字多/tmp/output/_vsr_batch 等子目录。这些音轨与源片相同，若当成独立素材
+    会重复跑整条流水线并产出重复交付，所以默认只处理命名规范的源文件。
+    """
     found = []
     for item in inputs:
         p = Path(item)
         if p.is_dir():
             for f in sorted(p.rglob("*")):
-                if f.is_file() and f.suffix.lower() in exts:
-                    found.append(f)
+                if not (f.is_file() and f.suffix.lower() in exts):
+                    continue
+                rel = f.relative_to(p)
+                if any(part.startswith("_") for part in rel.parts[:-1]):
+                    continue
+                if any(par.name.lower() == temp_name.lower() for par in f.parents):
+                    continue
+                if not _SOURCE_STEM.match(f.stem):
+                    continue
+                found.append(f)
         elif p.is_file() and p.suffix.lower() in exts:
             found.append(p)
-    # 跳过派生文件：_人声/_背景声/_越南语配音 是我们自己的产物；
-    # *_clean 是擦字幕版，若同目录有原版则只处理原版（音轨完全相同）；
-    # temp/ 下是中间产物（含配音 mp3/wav），一律不当作素材
-    pruned = []
+    # 同名只保留路径最浅的那个（花字多/子目录里的同源副本一律让位给顶层）
+    best = {}
     for f in found:
-        stem = f.stem
-        if any(m in stem for m in ("_人声", "_背景声", "_越南语配音")):
-            continue
-        if any(par.name.lower() == temp_name.lower() for par in f.parents):
-            continue
-        if stem.endswith("_clean") and f.with_name(stem[:-6] + f.suffix).exists():
-            continue
-        pruned.append(f)
-    found = pruned
-    # 去重保序
-    seen, out = set(), []
-    for f in found:
-        key = str(f.resolve()).lower()
-        if key not in seen:
-            seen.add(key)
-            out.append(f)
-    return out
+        key = f.stem.lower()
+        if key not in best or len(f.parts) < len(best[key].parts):
+            best[key] = f
+    return sorted(best.values(), key=lambda x: str(x).lower())
 
 
 class Heartbeat(threading.Thread):
