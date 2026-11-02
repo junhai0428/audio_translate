@@ -1,0 +1,7 @@
+# 中间产物与素材（体积大，不入库）
+work/
+output/
+input/
+__pycache__/
+*.pyc
+.workbuddy/
