@@ -151,7 +151,9 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
     norm_dir = ensure_dir(job.dir(STAGE) / "norm")
     concurrency = int(cfg.get("concurrency", 8))
     retries = int(cfg.get("retries", 3))
-    base_rate = "+0%"
+    # 基准语速：edge-tts 的 rate 百分比。"+0%" = 原速；"+50%" = 1.5 倍。
+    # 提高基准语速后，同样时间槽能容纳更多音节，译文不必压得过短。
+    base_rate = str(cfg.get("base_rate") or "+0%")
 
     # 2) 首轮并行合成
     for n, it in enumerate(items):
