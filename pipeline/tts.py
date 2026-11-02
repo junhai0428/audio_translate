@@ -112,7 +112,7 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
         return {"voice": str(out_mp3), "duration": media_duration(out_mp3), "skipped": True}
 
     data = read_json(job.vi_segments_json)
-    if not data or not data.get("segments"):
+    if not data:
         raise RuntimeError("缺少 Agent3 的 segments_vi.json")
 
     segs = [s for s in data["segments"] if (s.get("vi") or "").strip()]

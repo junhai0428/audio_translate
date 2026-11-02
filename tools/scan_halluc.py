@@ -66,6 +66,8 @@ def main() -> None:
         if not sp.is_file():
             continue
         segs = json.loads(sp.read_text(encoding="utf-8")).get("segments") or []
+        # 已经清空译文的句子不再重复报（zh 会一直留着）
+        segs = [s for s in segs if (s.get("vi") or "").strip()]
         bad, max_rep = find_halluc(segs)
         if not bad:
             continue
