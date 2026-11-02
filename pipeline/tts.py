@@ -117,7 +117,25 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
 
     segs = [s for s in data["segments"] if (s.get("vi") or "").strip()]
     if not segs:
-        raise RuntimeError("没有可用的越南语文案")
+        # 整条片子没有可念的台词（纯 BGM，或 ASR 幻觉已被清空）：出等长静音轨，
+        # 下游仍按同一套命名取文件，不用为这种片子写特例
+        log_fn("  [4/4 配音] 无有效口播，生成等长静音轨")
+        import shutil
+
+        import numpy as np
+        import soundfile as sf
+
+        sr = int(cfg.get("sample_rate", 44100))
+        total_dur = float(data.get("duration") or media_duration(job.media) or 0) or 1.0
+        out_wav = job.path(STAGE, f"{job.base}_vi_voice.wav")
+        out_wav.parent.mkdir(parents=True, exist_ok=True)
+        track = np.zeros(max(1, int(total_dur * sr)), dtype="float32")
+        sf.write(str(out_wav), np.stack([track, track], axis=1), sr, subtype="PCM_16")
+        run([FFMPEG, "-y", "-v", "error", "-i", str(out_wav),
+             "-c:a", "libmp3lame", "-b:a", "192k", str(out_mp3)], quiet=True)
+        shutil.copy2(out_mp3, job.deliverable)
+        log_fn(f"  [4/4 配音] 交付（静音）：{job.deliverable}")
+        return {"voice": str(out_mp3), "duration": total_dur, "silent": True}
 
     gender = (data.get("gender") or {}).get("label") or "female"
     voice = cfg["voices"].get(gender) or cfg["voices"]["female"]

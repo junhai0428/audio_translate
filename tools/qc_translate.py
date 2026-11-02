@@ -22,6 +22,8 @@ HAN = re.compile(r"[\u4e00-\u9fff]")
 NUM = re.compile(r"\d+(?:\.\d+)?")
 BRAND = re.compile(r"[A-Za-z]{2,}")
 MOJIBAKE = re.compile(r"(Ã.|â€|ï¿½|\ufffd)")
+# 只统计源素材工单（douyin_012 / bz_051 / 012），跳过 _nosub/_cfr 等历史派生物
+SRC = re.compile(r"^([A-Za-z0-9\u4e00-\u9fff]+_)?\d+$")
 # 越南广告合规红线（绝对化/医疗承诺/减肥）
 FORBIDDEN = ["chữa bệnh", "trị bệnh", "đặc trị", "thần dược", "giảm cân", "giảm béo",
              "tốt nhất", "số 1", "duy nhất", "trị khỏi", "khỏi bệnh"]
@@ -85,6 +87,8 @@ def main() -> None:
     for wd in iter_job_dirs(cfg):
         site = wd.parent.parent.name
         if site_filter and site != site_filter:
+            continue
+        if not SRC.match(wd.name):
             continue
         iss, st = check_job(wd, site)
         if st:

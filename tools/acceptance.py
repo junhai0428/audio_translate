@@ -20,6 +20,8 @@ import soundfile as sf  # noqa: E402
 from pipeline.config import iter_job_dirs, load_config  # noqa: E402
 
 CJK = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff]")
+# 只验源素材工单，跳过 _nosub/_cfr 等历史派生物残留
+SRC = re.compile(r"^([A-Za-z0-9\u4e00-\u9fff]+_)?\d+$")
 
 
 def dur(p):
@@ -70,7 +72,7 @@ def check_one(wd: Path):
 
 def main() -> None:
     args = sys.argv[1:]
-    wds = iter_job_dirs(load_config())
+    wds = [d for d in iter_job_dirs(load_config()) if SRC.match(d.name)]
     if args:
         wds = [d for d in wds if any(d.name == a or d.name.startswith(a) for a in args)]
     fails = 0

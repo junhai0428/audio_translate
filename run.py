@@ -107,7 +107,7 @@ def collect_medias(inputs: list, exts: list, temp_name: str = "temp") -> list:
     花字多/tmp/output/_vsr_batch 等子目录。这些音轨与源片相同，若当成独立素材
     会重复跑整条流水线并产出重复交付，所以默认只处理命名规范的源文件。
     """
-    found = []
+    found = []   # [(文件, 所属根目录)]
     for item in inputs:
         p = Path(item)
         if p.is_dir():
@@ -121,13 +121,14 @@ def collect_medias(inputs: list, exts: list, temp_name: str = "temp") -> list:
                     continue
                 if not _SOURCE_STEM.match(f.stem):
                     continue
-                found.append(f)
+                found.append((f, p))
         elif p.is_file() and p.suffix.lower() in exts:
-            found.append(p)
-    # 同名只保留路径最浅的那个（花字多/子目录里的同源副本一律让位给顶层）
+            found.append((p, p.parent))
+    # 同一根目录下同名只保留路径最浅的（花字多/子目录里的同源副本让位给顶层）；
+    # 不同产品目录的同名素材（各自的 douyin_052）必须都保留
     best = {}
-    for f in found:
-        key = f.stem.lower()
+    for f, root in found:
+        key = (str(root).lower(), f.stem.lower())
         if key not in best or len(f.parts) < len(best[key].parts):
             best[key] = f
     return sorted(best.values(), key=lambda x: str(x).lower())
@@ -250,7 +251,9 @@ def main() -> int:
     stages = parse_stages(args.stages) if args.stages else list(cfg.get("run", {}).get("stages", list(STAGES)))
     jobs = int(args.jobs or cfg.get("run", {}).get("jobs", 1))
     temp_name = str(cfg["dirs"]["temp"])
-    inputs = args.input or ([cfg["dirs"]["input"]] if cfg["dirs"].get("input") else [])
+    raw_inputs = args.input or ([cfg["dirs"]["input"]] if cfg["dirs"].get("input") else [])
+    # -i 支持逗号分隔多个素材，也支持多次 -i
+    inputs = [x.strip() for item in raw_inputs for x in str(item).split(",") if x.strip()]
     medias = collect_medias(inputs, [e.lower() for e in cfg.get("audio_exts", [".mp3", ".wav"])], temp_name)
 
     if args.limit:

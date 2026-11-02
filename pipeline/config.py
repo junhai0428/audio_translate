@@ -160,12 +160,12 @@ class Job:
     @property
     def deliverable(self) -> Path:
         """最终交付物：越南语配音轨，直接放视频同目录。"""
-        return self.out_dir / f"{self.base}_vi.mp3"
+        return self.out_dir / f"{self.base}_越南语配音.mp3"
 
     @property
     def bgm_deliverable(self) -> Path:
         """交付物 2：纯 BGM 轨，直接放视频同目录。"""
-        return self.out_dir / f"{self.base}_BGM.mp3"
+        return self.out_dir / f"{self.base}_背景声.mp3"
 
     # ---------- 状态 ----------
     def mark(self, stage: int, ok: bool, **info) -> None:
