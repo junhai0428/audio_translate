@@ -37,12 +37,26 @@ VI_SYSTEM = """你是中文→越南语的短视频口播本地化专家，受�
 
 铁律：
 1. 地道口语化越南语，符合越南年轻人短视频语感；不要书面语，不要堆砌汉越词。
-2. 严格控长：输入给出 max_syl（该句配音允许的最大音节数，越南语一个空格分隔的词≈一个音节）。越南语音节多，必须用最紧凑的表达，绝不能超过 max_syl。宁可砍修饰语，也不要超。
+2. 控长但不丢信息：max_syl 是该句配音的容量上限（越南语按空格分词计音节），target_syl 是建议长度。请在不超过 max_syl 的前提下完整表达中文意思（主语、程度、限定、卖点、CTA 都要保留），长度贴近 target_syl。
+   但**通顺优先于长度**：如果为了凑到 target_syl 要硬塞无意义词、重复同一词、或打乱越南语语序，就宁可短。语法不通比句子短严重得多。
+   只有确实放不下时才压，优先删虚词（thật sự, đúng là, thực ra, nhé, nha, thì, mà）和重复。
 3. 数字用阿拉伯数字；保留品牌名、型号、单位、货币符号。
 4. 一一对应输入的 id，不合并、不拆分、不增删、不解释、不加注释。
-5. 不加引号、不加字幕符号、不堆叠标点；单条最多两个逗号。
-6. 合规改写：祛湿/湿气/健脾/养胃/消肿/排毒等功效词，改成不含医疗承诺的表达（如 "hỗ trợ tiêu hóa"、"thanh lọc cơ thể"、"giảm cảm giác nặng nề"），不得出现治疗、根治、药效含义。
-7. 语气自然，像真人在镜头前说话，不要机翻腔。
+5. 不加引号、不加字幕符号、不堆叠标点；单条最多三个逗号。
+6. 合规但不许改原意：不得出现治疗、根治、药效承诺，但中医概念要用越南语通行说法**直译**，禁止换成含义不同的词：
+   湿气/寒湿 → khí ẩm / hàn ẩm；阳气 → dương khí；健脾 → hỗ trợ tỳ vị；养胃 → tốt cho dạ dày；
+   排毒 → thanh lọc cơ thể；消肿 → giảm sưng；祛湿 → đẩy khí ẩm ra。
+   严禁把"湿气"译成 nặng bụng、đầy hơi、khó tiêu 等改变含义的说法，严禁自行更换主语或器官。
+7. 每句独立成句：结尾不加逗号、分号、省略号（问句保留问号）。
+8. 语气自然，像真人在镜头前说话，不要机翻腔。
+9. 每条的 ctx 字段是前后句的中文，仅用于理解语境（确定主语/指代），不要翻译 ctx。
+
+参考译法（注意语序：形容词/修饰语在中心词之后，句子短也必须是通顺的越南语）：
+- 「湿气重的人真的很难健康长寿吗」max_syl 11 → "Người nặng khí ẩm khó sống khỏe lâu sao"
+- 「头发一抓一大把」max_syl 6 → "Tóc rụng từng nắm một"
+- 「油的快」max_syl 3 → "Tóc nhanh bết"
+- 「嘴巴味道也大大的」max_syl 5 → "Hơi miệng cũng nặng"
+- 「肚子慢慢变大」max_syl 5 → "Bụng to dần ra"
 
 只输出纯 JSON：{"segments":[{"id":1,"text":"..."}]}，不要 markdown 代码块，不要解释。"""
 
@@ -157,12 +171,17 @@ def translate_vi(cfg, key, segments, log_fn) -> list:
     size = int(cfg.get("batch_size", 25))
     out = []
     for idx, chunk in enumerate(_chunks(segments, size), 1):
-        payload = [
-            {"id": s["id"], "zh": s["text"], "slot_sec": round(s["slot"], 2), "max_syl": s["max_syl"]}
-            for s in chunk
-        ]
+        payload = []
+        for s in chunk:
+            item = {"id": s["id"], "zh": s["text"], "max_syl": s["max_syl"],
+                    "target_syl": s.get("target_syl") or s["max_syl"]}
+            ctx = s.get("ctx")
+            if ctx:
+                item["ctx"] = ctx
+            payload.append(item)
         user = (
-            "把下面每句中文翻译成越南语，严格遵守 max_syl（音节数上限）：\n"
+            "把下面每句中文翻译成越南语。max_syl 是音节上限，target_syl 是建议长度，"
+            "在 max_syl 以内尽量贴近 target_syl 并保留完整信息：\n"
             + json.dumps({"segments": payload}, ensure_ascii=False, indent=1)
         )
         content = _chat(cfg, key, VI_SYSTEM, user, log_fn)

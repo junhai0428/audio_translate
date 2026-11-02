@@ -235,8 +235,10 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
         placed += 1
 
     peak = float(np.max(np.abs(track))) if track.size else 0.0
-    if peak > 0.98:
-        track *= (0.95 / peak)
+    # 峰值上限统一为 -1.5dBFS：过响的整轨衰减，安静的片子一律不动
+    ceiling = 10 ** (-1.5 / 20)
+    if peak > ceiling:
+        track *= ceiling / peak
     if peak <= 0:
         log_fn("  [4/4 配音] 警告：合成音频为空")
 
