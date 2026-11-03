@@ -4,7 +4,7 @@
 产出：
   <素材目录>/temp/<工单>/01_separate/<音频名>.mp3       口播人声（中间产物）
   <素材目录>/temp/<工单>/01_separate/<音频名>_bgm.mp3   伴奏（中间产物）
-  <素材目录>/<音频名>_BGM.mp3                        交付物：纯 BGM
+  <素材目录>/<音频名>_背景声.mp3                     交付物：纯 BGM
 """
 
 from __future__ import annotations

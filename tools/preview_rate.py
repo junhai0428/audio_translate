@@ -114,7 +114,8 @@ def main() -> None:
     gap = float(cfg["tts"].get("gap", 0.04)) * 3  # 试听句间留 3 倍常规间隙，听感更自然
     voices = cfg["tts"]["voices"]
     jobs, rates, max_sec, conc = parse_args(sys.argv[1:])
-    out_root = ensure_dir(Path(cfg["media_roots"][0]) / "_语速试听")
+    # 试听是中间产物，落 <素材根>/temp/ 下，素材目录只保留源片 + 两个交付音轨
+    out_root = ensure_dir(Path(cfg["media_roots"][0]) / str(cfg["dirs"]["temp"]) / "_语速试听")
 
     import numpy as np
     import soundfile as sf
