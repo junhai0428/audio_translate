@@ -1,10 +1,11 @@
 """第 2 步 · 语音转写（ASR）+ 性别判定
 用 faster-whisper 转写第 1 步产出的人声轨，保留逐句起止时间，写入 asr.json；
-再用基频(F0)中位数判断口播是男声还是女声。
+再用声纹模型（ECAPA-TDNN 嵌入 + SVM）判断口播是男声还是女声。
 
 产出：<工作目录>/02_asr/asr.json
 {
-  "gender": {"label": "female", "median_f0": 213.4, "voiced_frames": 812, "confidence": 0.87},
+  "gender": {"label": "male", "method": "ecapa_svm", "confidence": 0.93, "margin": -0.83,
+             "probe": [12.0, 42.0]},
   "segments": [{"id": 1, "start": 0.02, "end": 2.34, "text": "..."}]
 }
 """
@@ -93,6 +94,82 @@ def estimate_f0(wav_path: Path, sr: int = 16000, fmin: float = 70.0, fmax: float
     return float(statistics.median(f0s)), len(f0s), f0s
 
 
+# 声纹性别判定（SpeechBrain ECAPA-TDNN 192 维说话人嵌入 + SVM，
+# 与 voice-gender-classification 同款权重，VoxCeleb2 训练、官方 98.9%）。
+# 进程内复用：GPU 上首加载约 2s，之后每条约 0.2s。
+_GENDER_MODEL = None
+_GENDER_KEY = None
+_GENDER_LOCK = threading.Lock()
+
+
+def _gender_dirs(cfg: dict) -> tuple:
+    """模型目录：<gender_model_root>/ecapa-voxceleb 与 /gender_cls_svm_ecapa。"""
+    root = Path(str(cfg.get("gender_model_root") or "models"))
+    if not root.is_absolute():
+        root = Path(str(cfg.get("_root") or ".")) / root
+    return root / "ecapa-voxceleb", root / "gender_cls_svm_ecapa"
+
+
+def _get_gender_model(cfg: dict, log_fn=log):
+    global _GENDER_MODEL, _GENDER_KEY
+    ecapa_dir, svm_dir = _gender_dirs(cfg)
+    dev = "cuda:0" if str(cfg.get("device", "cpu")).startswith("cuda") else "cpu"
+    key = (str(ecapa_dir), str(svm_dir), dev)
+    with _GENDER_LOCK:
+        if _GENDER_MODEL is not None and _GENDER_KEY == key:
+            return _GENDER_MODEL
+        if not (ecapa_dir / "embedding_model.ckpt").is_file():
+            raise FileNotFoundError(f"缺 ECAPA 权重：{ecapa_dir}")
+        if not (svm_dir / "svm_model.joblib").is_file():
+            raise FileNotFoundError(f"缺性别 SVM：{svm_dir}")
+
+        import joblib
+        from speechbrain.inference.speaker import EncoderClassifier
+
+        # speechbrain 的 Pretrainer 默认用 symlink 把缓存文件落到 savedir，
+        # Windows 没开开发者模式会抛 WinError 1314。文件齐全时它会跳过 fetch，
+        # 但 hyperparams 里写的是 label_encoder.txt、落盘名要 .ckpt，先补齐。
+        le_txt = ecapa_dir / "label_encoder.txt"
+        le_ckpt = ecapa_dir / "label_encoder.ckpt"
+        if not le_ckpt.exists() and le_txt.exists():
+            le_ckpt.write_bytes(le_txt.read_bytes())
+
+        log_fn(f"  [2/4 转写] 加载声纹模型：ECAPA + SVM（{dev}）")
+        enc = EncoderClassifier.from_hparams(source=str(ecapa_dir), savedir=str(ecapa_dir),
+                                             run_opts={"device": dev})
+        meta = read_json(svm_dir / "config.json", {}) or {}
+        _GENDER_MODEL = {
+            "enc": enc,
+            "svm": joblib.load(str(svm_dir / "svm_model.joblib")),
+            "scaler": joblib.load(str(svm_dir / "scaler.joblib")),
+            "labels": meta.get("labels") or ["female", "male"],
+            "features": meta.get("feature_names") or [],
+        }
+        _GENDER_KEY = key
+        return _GENDER_MODEL
+
+
+def _probe_window(data, sr: int, max_sec: float = 30.0):
+    """取整段里能量最集中的 ≤30 秒，避开纯音乐前奏/纯 BGM 尾巴，也别让长音频拖慢推理。
+
+    直接喂整条 75s 也能跑，但 ECAPA 的注意力池化对整段取平均，混进长段纯音乐
+    会把嵌入拉偏；取最响的连续窗更接近「口播段」。
+    """
+    import numpy as np
+
+    n = int(len(data) / sr)
+    span = max(1, min(int(max_sec), n))
+    if n <= span:
+        return data, 0.0, len(data) / sr
+    rms = np.array([float(np.sqrt(float(np.mean(data[i * sr:(i + 1) * sr].astype("float64") ** 2))))
+                    for i in range(n)])
+    csum = np.concatenate([[0.0], np.cumsum(rms)])
+    sums = csum[span:] - csum[:-span]
+    i = int(np.argmax(sums))
+    a, b = i * sr, min(len(data), (i + span) * sr)
+    return data[a:b], a / sr, b / sr
+
+
 def load_audio_16k(vocal_mp3: Path, work_dir: Path, sr: int = 16000):
     """用 ffmpeg 解码成 16k 单声道 float32 数组。
 
@@ -149,23 +226,62 @@ def _iter_segments(model, audio, cfg, sr: int, chunk_sec: float = 300.0, log_fn=
 
 # ---------------------------------------------------------------- 性别判定
 def detect_gender(vocal_mp3: Path, work_dir: Path, cfg: dict, log_fn=log) -> dict:
+    """声纹判性别（ECAPA 192 维嵌入 + SVM）；基频只在模型缺失时兜底。
+
+    为什么不再用 F0 主判：030 的基频中位数 216Hz（女声区），声纹判 male——
+    抖音素材里「男声但音高偏高 / 加了变声」很常见，F0 只看音高必错；
+    声纹看的是声道长度与频谱包络（音色），不受音高影响。
+    257 条工单交叉验证：两法一致 86%，冲突几乎全是「F0 判女 → 声纹判男」。
+    """
+    import soundfile as sf
+
+    # 优先复用 ASR 已经转好的 16k 单声道，省一次解码
+    wav = Path(work_dir) / "asr_input_16k.wav"
+    if not wav.is_file():
+        wav = ensure_dir(work_dir) / "gender_probe.wav"
+        to_wav(vocal_mp3, wav, sr=16000, mono=True)
+
+    try:
+        data, file_sr = sf.read(str(wav), dtype="float32", always_2d=False)
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        if file_sr != 16000:
+            raise RuntimeError(f"采样率 {file_sr}Hz")
+
+        import pandas as pd
+        import torch
+
+        m = _get_gender_model(cfg, log_fn=log_fn)
+        piece, off_a, off_b = _probe_window(data, 16000)
+        dev = "cuda:0" if str(cfg.get("device", "cpu")).startswith("cuda") else "cpu"
+        w = torch.from_numpy(piece.copy()).float().unsqueeze(0).to(dev)
+        with torch.no_grad():
+            emb = m["enc"].encode_batch(w, torch.tensor([1.0]).to(dev)).squeeze(1).cpu().numpy()
+        feats = m["features"] or [f"{i}_speechbrain_embedding" for i in range(emb.shape[1])]
+        x = m["scaler"].transform(pd.DataFrame(emb, columns=feats))
+        label = m["labels"][int(m["svm"].predict(x)[0])]
+        try:
+            margin = float(m["svm"].decision_function(x)[0])
+        except Exception:
+            margin = 0.0
+        conf = 1.0 / (1.0 + math.exp(-abs(margin))) if margin else 0.5
+        log_fn(f"  [2/4 转写] 声纹判定：{'男声' if label == 'male' else '女声'}"
+               f"（ECAPA+SVM，margin {margin:+.2f}，取样 {off_a:.1f}-{off_b:.1f}s）")
+        return {"label": label, "method": "ecapa_svm", "confidence": round(conf, 2),
+                "margin": round(margin, 3), "probe": [round(off_a, 1), round(off_b, 1)],
+                "median_f0": None}
+    except Exception as e:
+        log_fn(f"  [2/4 转写] 声纹判定不可用（{type(e).__name__}: {e}），回退基频判定")
+
     threshold = float(cfg.get("gender_f0_threshold", 165))
     lo, hi = cfg.get("gender_f0_range", [70, 350])
-    tmp_wav = ensure_dir(work_dir) / "gender_probe.wav"
-    to_wav(vocal_mp3, tmp_wav, sr=16000, mono=True)
-    median_f0, voiced, f0s = estimate_f0(tmp_wav, 16000, float(lo), float(hi))
-    try:
-        tmp_wav.unlink(missing_ok=True)
-    except Exception:
-        pass
-
+    median_f0, voiced, _ = estimate_f0(wav, 16000, float(lo), float(hi))
     label = "male" if (median_f0 and median_f0 < threshold) else "female"
-    if not median_f0:
-        label = "female"
-    # 置信度：中位数离阈值越远越确信
     conf = 0.0 if not median_f0 else min(1.0, abs(median_f0 - threshold) / 60.0)
-    log_fn(f"  [2/4 转写] 声纹基频中位数 {median_f0:.1f}Hz（阈值 {threshold:.0f}）→ {'男声' if label == 'male' else '女声'}，有效帧 {voiced}")
-    return {"label": label, "median_f0": round(median_f0, 1), "voiced_frames": voiced, "confidence": round(conf, 2)}
+    log_fn(f"  [2/4 转写] 基频中位数 {median_f0:.1f}Hz（阈值 {threshold:.0f}）→ "
+           f"{'男声' if label == 'male' else '女声'}，有效帧 {voiced}")
+    return {"label": label, "method": "f0_fallback", "median_f0": round(median_f0, 1),
+            "voiced_frames": voiced, "confidence": round(conf, 2)}
 
 
 def _mk_item(seg, offset, idx):

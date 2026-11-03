@@ -27,7 +27,7 @@
 | 顺序 | 干什么 | 输入 | 产物 |
 |---|---|---|---|
 | 第 1 步 | **人声分离** —— demucs 拆出纯口播和 BGM | 源音频 | `01_separate/<名>.mp3`、`<名>_bgm.mp3`（temp 内），并交付 `<名>_背景声.mp3` |
-| 第 2 步 | **语音转写** —— 逐句 ASR + F0 判男女 | 第 1 步人声轨 | `02_asr/asr.json`、`asr.srt` |
+| 第 2 步 | **语音转写** —— 逐句 ASR + 声纹判男女 | 第 1 步人声轨 | `02_asr/asr.json`、`asr.srt` |
 | 第 3 步 | **翻译控长** —— 中文校对、译越南语、压到音节预算内 | 第 2 步 asr.json | `03_translate/zh_opt.txt`、`vi.txt`、`segments_vi.json` |
 | 第 4 步 | **配音对齐** —— TTS 合成，逐句锚定原起点 | 第 3 步 segments_vi.json | `04_voice/<名>_vi_voice.mp3/.wav`（temp 内），并交付 `<名>_越南语配音.mp3` |
 
@@ -274,7 +274,42 @@ pip install "tokenizers>=0.21,<1" -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 手工兜底：`tools/scan_asr.py` 列出所有 >4s 空档，逐个听源音频复核。
 
-**性别判定**：40ms 帧自相关法求 F0 中位数，阈值 **165Hz**（女 ≥165）。中位数离阈值 < 15Hz 时必须标注"临界，建议人工确认"，不要把临界值当结论。
+**性别判定**：用**声纹模型**——SpeechBrain ECAPA-TDNN 192 维说话人嵌入 + SVM
+（与 `voice-gender-classification` 同款权重，VoxCeleb2 训练、官方 98.9%），权重在
+`E:/Projects/whisper_env/models/{ecapa-voxceleb, gender_cls_svm_ecapa}`。推理取整条里
+**能量最集中的 ≤30 秒**（`_probe_window`，避开纯音乐前奏/尾巴），GPU 约 0.2s/条。
+结果写 `asr.json → gender`：`{"label", "method": "ecapa_svm", "margin", "confidence", "probe"}`。
+
+> **为什么不再用基频**：`douyin_030` 的 F0 中位数 216Hz（女声区），声纹判 **male**——
+> 抖音素材里「男声但音高偏高 / 加了变声」很常见，F0 只看音高必错；声纹看的是
+> 声道长度与频谱包络（音色），不受音高影响。257 条历史工单交叉验证：两法一致 86%，
+> 35 条冲突里 31 条是「F0 判女 → 声纹判男」。F0 只保留为**模型缺失时的兜底**
+> （`method=f0_fallback`，阈值仍 165Hz），正常路径一律 `ecapa_svm`。
+
+**已有产物换判据**（ASR 结果不用重跑）：
+
+```powershell
+python tools/regender.py --site 01           # 干跑，只看 label 变化
+python tools/regender.py --site 01 --apply   # 写回 asr.json 与 03_translate/segments_vi.json
+# 再对列出的工单重配音（音色变了，配音必须重合成）
+python run.py -i "<视频>" --stages 4 --force
+```
+
+> Windows 坑：speechbrain 的 Pretrainer 默认用 symlink 落盘，没开开发者模式会抛
+> `WinError 1314`。模型目录里备好 `label_encoder.ckpt`（由 `.txt` 复制）后，
+> 文件已存在会跳过 fetch，不再触发。
+
+**子项目 `voice-gender-classification/`**（上游 Gregory Koushnir 的 voice-gender-classification，
+MIT，已 `pip install -e` 进环境，`import voice_gender_classification` 指向本目录 `src/`）。
+主项目**不直接 import 它的 pipeline**，而是复用同一套权重、自己实现推理，三条原因：
+
+| # | 上游实现 | 本项目做法 |
+|---|---|---|
+| 1 | `__init__` 里 `EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb")` 硬编码 HF 仓库 ID | 传 `source=savedir=<本地权重目录>`，全程离线，避开 symlink |
+| 2 | 用 `torchaudio.functional.resample` 重采样；本环境 torchaudio 2.11.0+cpu 与 torch 2.14.1+cu130 版本不匹配 | ffmpeg 预转 16k，全程不碰 torchaudio |
+| 3 | 整段音频做一次 `encode_batch`，长段会被平均掉 | 取**能量最集中的 ≤30 秒**再编码，输出额外带 `margin`（SVM `decision_function`）与 `confidence` |
+
+子项目源码保持上游原样（便于以后同步上游）；真要改它的行为，改完 `pip install -e` 立即生效。
 
 ### 7.3 第 3 步 · 翻译控长
 
@@ -355,6 +390,8 @@ target  = min(max_syl, 中文音节数 × 1.2)   # 建议长度，喂给模型
 | ctranslate2 | **4.8.4，自带 cuDNN 9，`get_cuda_device_count()=1`** —— 第 2 步可直接 `device=cuda` |
 | 装 torch CUDA | `pip install --index-url https://download.pytorch.org/whl/cu130 --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple torch==2.14.1+cu130`（约 2GB，`--cache-dir E:/pip_cache` 别落 C 盘） |
 | whisper 模型 | `E:/Projects/whisper_env/models/whisper_models/models--Systran--faster-whisper-large-v3/snapshots/<hash>/`（本地已下载） |
+| 声纹模型 | `E:/Projects/whisper_env/models/ecapa-voxceleb`（ECAPA-TDNN，83MB）+ `gender_cls_svm_ecapa`（SVM 16MB）；`speechbrain 1.1.2` 已装，无需联网 |
+| 声纹子项目 | 仓库内 `voice-gender-classification/`，`pip install -e` 已装（`import` 指向其 `src/`） |
 | 装包 | 一律清华镜像 `-i https://pypi.tuna.tsinghua.edu.cn/simple`（官方源被限速 ~14KB/s） |
 | 缓存 | `HF_HOME=E:/Projects/whisper_env/models/hf_cache`、`TORCH_HOME=E:/Projects/whisper_env/models/hf_cache/torch` |
 | C 盘 | 长期紧张（300G 用掉 90%），缓存/模型/venv 一律落 E 盘 |
@@ -412,7 +449,8 @@ ffmpeg -y -i <无字幕视频> -i <vi_voice.mp3> -i <原BGM.mp3> \
 1. ~~四步端到端完整实跑~~ —— **2026-10-29 已跑通**（douyin_051/152/165 三条，见下"实测记录"）。
 2. **第 3 步的音节预算需更多样本校准**：本次占用 0.92/0.92/0.95，`avg_tempo=1.001`，3.2 SPS 口径暂时够用；
    但 `Minoxidil` 这类多音节借词按 1 音节计数会低估，密集出现时需下调 SPS 或单独留余量。
-3. ~~第 4 步的男女音色只验过女声~~ —— 本次 051 用 **NamMinh（男声）** 已实测通过。
+3. ~~第 4 步的男女音色只验过女声~~ —— 2026-11-03 用 **douyin_030（NamMinh 男声，33 句、填充 73%）** 实测通过。
+   （051 早前用男声跑过，但声纹重判为女性，2026-11-03 已改回 HoaiMy。历史记录只作留档。）
 
 5. **新暴露**：`site-packages` 里有 `~orch`、`~orch-2.6.0+cu124.dist-info`、`~orchgen`、`~unctorch` 四个旧 torch 残留
    （pip 会打印 "Ignoring invalid distribution"），删除被环境安全策略拦截，需手动清理。
