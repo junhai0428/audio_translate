@@ -237,10 +237,10 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
     total_dur = float(asr.get("duration") or 0) or (float(asr["segments"][-1]["end"]) + 0.5)
     slots = compute_slots(
         asr["segments"], total_dur,
-        gap_use=float(cfg.get("gap_use", 0.85)), gap=float(cfg.get("gap", 0.04)),
+        gap_use=float(cfg.get("gap_use", 0.95)), gap=float(cfg.get("gap", 0.04)),
     )
-    sps = float(cfg.get("vi_syllables_per_sec", 3.2))
-    head_line = float(cfg.get("head_line", 0.2))
+    sps = float(cfg.get("vi_syllables_per_sec", 5.6))
+    head_line = float(cfg.get("head_line", 0.08))
 
     if not bool(cfg.get("enabled", True)):
         log_fn("  [3/4 翻译] LLM 已禁用，仅落原文")

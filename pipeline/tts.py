@@ -74,11 +74,15 @@ def _trim_to_wav(src: Path, dst: Path, sr: int) -> float:
 
 
 def _tempo(src: Path, dst: Path, tempo: float, sr: int) -> None:
+    """tempo > 1 加速（清空溢出），< 1 放慢（铺满槽位）。atempo 单级只吃 0.5~2.0。"""
     filters = []
     t = tempo
     while t > 2.0:
         filters.append("atempo=2.0")
         t /= 2.0
+    while t < 0.5:
+        filters.append("atempo=0.5")
+        t /= 0.5
     if abs(t - 1.0) > 0.005:
         filters.append(f"atempo={t:.4f}")
     cmd = [FFMPEG, "-y", "-v", "error", "-i", str(src)]
@@ -144,6 +148,8 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
     min_slot = float(cfg.get("min_slot", 0.35))
     max_tempo = float(cfg.get("max_tempo", 1.85))
     resynth_thr = float(cfg.get("resynth_threshold", 1.12))
+    min_fill = float(cfg.get("min_fill", 0.8))       # 低于此填充率就放慢铺满
+    max_slow = float(cfg.get("max_slow", 1.3))       # 最多放慢几倍（越大越慢、越满）
     total_dur = float(data.get("duration") or media_duration(job.media) or 0)
     if total_dur <= 0:
         total_dur = max(float(s["end"]) for s in segs) + 0.5
@@ -151,7 +157,7 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
     log_fn(f"  [4/4 配音] 音色 {voice}（原声 {gender}），共 {len(segs)} 句，目标总长 {total_dur:.2f}s")
 
     # 1) 每句可用时隙（与 Agent3 预算同一口径）
-    slots = compute_slots(segs, total_dur, gap_use=float(cfg.get("gap_use", 0.85)), gap=gap,
+    slots = compute_slots(segs, total_dur, gap_use=float(cfg.get("gap_use", 0.95)), gap=gap,
                           min_slot=min_slot)
     items = []
     for i, s in enumerate(segs):
@@ -220,8 +226,12 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
         tempo = 1.0
         if dur > it["slot"] * 1.02:
             tempo = min(max_tempo, dur / it["slot"])
+        elif dur < it["slot"] * min_fill:
+            # 偏短：放慢到接近填满槽位（atempo<1，音高不变），把句间空白用掉
+            tempo = max(1.0 / max_slow, dur / (it["slot"] * min_fill))
         _tempo(it["wav"], it["final"], tempo, sr)
         it["tempo"] = tempo
+        it["fill"] = round(min(1.0, (dur / tempo) / it["slot"]), 3) if it["slot"] else 0.0
         tempos.append(tempo)
 
     # 5) 拼接时间轴
@@ -272,6 +282,8 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
     log_fn(f"  [4/4 配音] 交付：{job.deliverable}")
 
     far_over = sum(1 for t in tempos if t > 1.45)
+    done = [it for it in items if it.get("ok")]
+    avg_fill = round(sum(float(it.get("fill") or 0) for it in done) / max(1, len(done)), 3)
     stats = {
         "voice": voice,
         "gender": gender,
@@ -281,20 +293,22 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
         "avg_tempo": round(sum(tempos) / len(tempos), 3) if tempos else 1.0,
         "max_tempo": round(max(tempos), 3) if tempos else 1.0,
         "over_1_45": far_over,
+        "avg_fill": avg_fill,
         "duration": media_duration(out_mp3),
         "target_duration": round(total_dur, 3),
     }
     write_json(job.path(STAGE, "tts_stats.json"), stats)
-    # 逐句台账：便于验收定位"被大幅提速"的句子（tempo 越大说明译文越挤）
+    # 逐句台账：tempo >1 说明译文挤，<1 说明放慢铺满；fill 是配音占槽位比例
     write_json(job.path(STAGE, "tts_manifest.json"), [
         {"id": it.get("id"), "start": it.get("start"), "slot": round(float(it.get("slot", 0)), 3),
          "raw_dur": round(float(it.get("raw_dur") or 0), 3),
          "tempo": round(float(it.get("tempo", 1.0)), 3),
+         "fill": it.get("fill"),
          "zh": it.get("zh"), "vi": it.get("vi")}
-        for it in items if it.get("ok")
+        for it in done
     ])
     log_fn(
-        f"  [4/4 配音] 完成：{placed}/{len(items)} 句，平均加速 {stats['avg_tempo']}x，"
-        f"最大 {stats['max_tempo']}x，时长 {stats['duration']:.2f}s / 目标 {total_dur:.2f}s"
+        f"  [4/4 配音] 完成：{placed}/{len(items)} 句，平均倍速 {stats['avg_tempo']}x，"
+        f"槽位填充 {avg_fill:.0%}，时长 {stats['duration']:.2f}s / 目标 {total_dur:.2f}s"
     )
     return {"voice": str(out_mp3), "wav": str(out_wav), **stats}

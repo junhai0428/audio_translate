@@ -110,10 +110,10 @@ def apply_budget(segs, total_dur) -> None:
     """按项目口径给每句算 slot / max_syl / syl（就地写回）。"""
     cfg = read_json(ROOT / "config.json", {})
     tcfg = cfg.get("translate", {})
-    sps = float(tcfg.get("vi_syllables_per_sec", 3.2))
-    head_line = float(tcfg.get("head_line", 0.2))
+    sps = float(tcfg.get("vi_syllables_per_sec", 5.6))
+    head_line = float(tcfg.get("head_line", 0.08))
     slots = compute_slots(segs, total_dur,
-                          gap_use=float(tcfg.get("gap_use", 0.85)), gap=float(tcfg.get("gap", 0.04)))
+                          gap_use=float(tcfg.get("gap_use", 0.95)), gap=float(tcfg.get("gap", 0.04)))
     for s, (_, slot) in zip(segs, slots):
         s["slot"] = round(slot, 3)
         s["max_syl"] = max(2, int(round((slot - head_line) * sps)))
