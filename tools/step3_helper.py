@@ -14,14 +14,14 @@ whisper 单句上限 30 秒，口播类素材常出现 20~30 秒的"超长整段
 from __future__ import annotations
 
 import json
-import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from pipeline.utils import compute_slots, count_vi_syllables, hhmmss, read_json, write_json  # noqa: E402
+from pipeline.utils import (compute_slots, count_vi_syllables, hhmmss, read_json,  # noqa: E402
+                            split_long_segments, write_json)
 
 PUNCT = "，,。；;：:！!？?、…"
 MAX_DUR = 5.0       # 单句目标时长上限（秒）
@@ -29,75 +29,12 @@ MAX_CHARS = 30      # 单句字数上限
 MIN_DUR = 1.0       # 切出来的句子最小时长，太碎不配音
 
 
-def _close_at(word: str) -> bool:
-    return bool(word) and word[-1] in PUNCT
-
-
-def split_one(seg: dict) -> list:
-    """把一句（可能 30 秒）按词级时间戳切成可对齐的小句。"""
-    start, end = float(seg["start"]), float(seg["end"])
-    if end - start <= MAX_DUR and len(seg["text"]) <= MAX_CHARS:
-        return [{"start": start, "end": end, "zh": seg["text"].strip()}]
-
-    words = seg.get("words") or []
-    if not words:
-        return _split_by_ratio(seg)
-
-    chunks, cur = [], []
-    for w in words:
-        cur.append(w)
-        c_dur = float(cur[-1]["e"]) - float(cur[0]["s"])
-        c_txt = "".join(x["w"] for x in cur)
-        gap_next = None
-        idx = words.index(w)
-        if idx + 1 < len(words):
-            gap_next = float(words[idx + 1]["s"]) - float(w["e"])
-        if len(c_txt) >= MAX_CHARS or c_dur >= MAX_DUR + 1.0:
-            chunks.append(cur)
-            cur = []
-        elif _close_at(w["w"]) and (len(c_txt) >= 16 or c_dur >= 3.0):
-            chunks.append(cur)
-            cur = []
-        elif gap_next is not None and gap_next >= 0.35 and c_dur >= 2.0:
-            chunks.append(cur)
-            cur = []
-    if cur:
-        chunks.append(cur)
-
-    out = []
-    for c in chunks:
-        s = float(c[0]["s"])
-        e = float(c[-1]["e"])
-        txt = "".join(x["w"] for x in c).strip().strip("，,、。 ")
-        if not txt:
-            continue
-        if e - s < MIN_DUR:
-            e = min(s + MIN_DUR, end)
-        out.append({"start": round(s, 3), "end": round(e, 3), "zh": txt})
-    return out or [{"start": start, "end": end, "zh": seg["text"].strip()}]
-
-
-def _split_by_ratio(seg: dict) -> list:
-    """没有词级时间戳时，按标点 + 字数比例切分（退化方案）。"""
-    start, end = float(seg["start"]), float(seg["end"])
-    parts = [p for p in re.split(r"(?<=[%s])" % re.escape(PUNCT), seg["text"]) if p.strip()]
-    dur = end - start
-    total = sum(len(p) for p in parts) or 1
-    out, t = [], start
-    for p in parts:
-        d = dur * len(p) / total
-        out.append({"start": round(t, 3), "end": round(min(t + d, end), 3), "zh": p.strip().strip("，,、。 ")})
-        t += d
-    return out
-
-
 def cmd_split(work_dir: Path) -> None:
     asr = read_json(work_dir / "02_asr" / "asr.json")
     segs = asr.get("segments") or []
-    out = []
-    for s in segs:
-        for piece in split_one(s):
-            out.append({"id": len(out) + 1, **piece})
+    # 切分逻辑在 pipeline.utils（第 3 步翻译前也走同一份），这里只做字段名转换
+    out = [{"id": p["id"], "start": p["start"], "end": p["end"], "zh": p["text"]}
+           for p in split_long_segments(segs, MAX_DUR, MAX_CHARS, MIN_DUR)]
     dst = work_dir / "03_translate" / "zh_split.json"
     write_json(dst, {"media": asr.get("media"), "duration": asr.get("duration"),
                      "gender": asr.get("gender"), "segments": out})

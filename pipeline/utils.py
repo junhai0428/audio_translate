@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -176,6 +177,73 @@ def compute_slots(segments, total_dur: float, gap_use: float = 0.85,
         nxt = float(segments[i + 1]["start"]) if i + 1 < len(segments) else max(total_dur, end)
         slot_end = min(nxt - gap, end + max(0.0, nxt - end) * gap_use, max(total_dur, end) - 0.02)
         out.append((start, max(min_slot, slot_end - start)))
+    return out
+
+
+PUNCT_BREAK = "，,。；;：:！!？?、…"
+
+
+def _split_one(seg: dict, max_dur: float, max_chars: int, min_dur: float) -> list:
+    """一句 ASR 结果 → 若干可对齐小句（优先用词级时间戳，无则按标点比例切）。"""
+    start, end = float(seg["start"]), float(seg["end"])
+    text = (seg.get("text") or "").strip()
+    if end - start <= max_dur and len(text) <= max_chars:
+        return [{"start": start, "end": end, "text": text}]
+
+    words = seg.get("words") or []
+    if not words:
+        parts = [p for p in re.split(r"(?<=[%s])" % re.escape(PUNCT_BREAK), text) if p.strip()]
+        dur = end - start
+        total = sum(len(p) for p in parts) or 1
+        out, t = [], start
+        for p in parts:
+            d = dur * len(p) / total
+            out.append({"start": round(t, 3), "end": round(min(t + d, end), 3),
+                        "text": p.strip().strip("，,、。 ")})
+            t += d
+        return out or [{"start": start, "end": end, "text": text}]
+
+    chunks, cur = [], []
+    for i, w in enumerate(words):
+        cur.append(w)
+        c_dur = float(w["e"]) - float(cur[0]["s"])
+        c_txt = "".join(x["w"] for x in cur)
+        gap_next = float(words[i + 1]["s"]) - float(w["e"]) if i + 1 < len(words) else None
+        if len(c_txt) >= max_chars or c_dur >= max_dur + 1.0:
+            chunks.append(cur)
+            cur = []
+        elif (w.get("w") or "")[-1:] in PUNCT_BREAK and (len(c_txt) >= 16 or c_dur >= 3.0):
+            chunks.append(cur)
+            cur = []
+        elif gap_next is not None and gap_next >= 0.35 and c_dur >= 2.0:
+            chunks.append(cur)
+            cur = []
+
+    if cur:
+        chunks.append(cur)
+    out = []
+    for c in chunks:
+        s, e = float(c[0]["s"]), float(c[-1]["e"])
+        txt = "".join(x["w"] for x in c).strip().strip("，,、。 ")
+        if not txt:
+            continue
+        if e - s < min_dur:
+            e = min(s + min_dur, end)
+        out.append({"start": round(s, 3), "end": round(e, 3), "text": txt})
+    return out or [{"start": start, "end": end, "text": text}]
+
+
+def split_long_segments(segments, max_dur: float = 5.0, max_chars: int = 30,
+                        min_dur: float = 1.0) -> list:
+    """把 ASR 的超长段切成 ≤max_dur / ≤max_chars 的小句，id 从 1 重排。
+
+    第 3 步翻译前必须切：中文口播一句话 20 多秒不切，就成了一整条 130+ 音节的
+    巨句，配音无法逐句对齐，字幕也散架。
+    """
+    out = []
+    for seg in segments:
+        for piece in _split_one(seg, max_dur, max_chars, min_dur):
+            out.append({"id": len(out) + 1, **piece})
     return out
 
 

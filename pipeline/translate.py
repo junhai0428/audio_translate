@@ -17,7 +17,8 @@ import urllib.request
 from pathlib import Path
 
 from .config import Job, llm_key
-from .utils import compute_slots, count_vi_syllables, hhmmss, log, read_json, write_json
+from .utils import (compute_slots, count_vi_syllables, hhmmss, log, read_json,
+                    split_long_segments, write_json)
 
 STAGE = 3
 
@@ -37,8 +38,11 @@ VI_SYSTEM = """你是中文→越南语的短视频口播本地化专家，受�
 
 铁律：
 1. 地道口语化越南语，符合越南年轻人短视频语感；不要书面语，不要堆砌汉越词。
-2. 控长但不丢信息：max_syl 是该句配音的容量上限（越南语按空格分词计音节），target_syl 是建议长度。请在不超过 max_syl 的前提下完整表达中文意思（主语、程度、限定、卖点、CTA 都要保留），长度贴近 target_syl。
-   但**通顺优先于长度**：如果为了凑到 target_syl 要硬塞无意义词、重复同一词、或打乱越南语语序，就宁可短。语法不通比句子短严重得多。
+2. 信息完整度优先：max_syl 是该句配音的容量上限（越南语按空格分词计音节），target_syl 是目标长度。
+   在不超过 max_syl 的前提下，把中文里的信息**完整搬过来**——主语、程度、限定、卖点、成分、价格、CTA 一个都不丢；
+   中文叠了两个修饰就译两个，不要只留一个，也不要把"特别/真的/一直"这类程度词吞掉。
+   译文音节数应达到 **target_syl 的 85% 以上**，明显偏短视为漏译，需要补全。
+   但**通顺优先于凑数**：只能补中文本来就有的信息，不许编造新卖点、不许重复同一个词、不许打乱越南语语序。语法不通比句子短严重得多。
    只有确实放不下时才压，优先删虚词（thật sự, đúng là, thực ra, nhé, nha, thì, mà）和重复。
 3. 数字用阿拉伯数字；保留品牌名、型号、单位、货币符号。
 4. 一一对应输入的 id，不合并、不拆分、不增删、不解释、不加注释。
@@ -180,8 +184,9 @@ def translate_vi(cfg, key, segments, log_fn) -> list:
                 item["ctx"] = ctx
             payload.append(item)
         user = (
-            "把下面每句中文翻译成越南语。max_syl 是音节上限，target_syl 是建议长度，"
-            "在 max_syl 以内尽量贴近 target_syl 并保留完整信息：\n"
+            "把下面每句中文翻译成越南语。max_syl 是音节上限，target_syl 是目标长度："
+            "译文要达到 target_syl 的 85% 以上，中文里的程度、限定、修饰、卖点都要译出来，"
+            "不能因为简洁而漏掉信息；同时不得超过 max_syl：\n"
             + json.dumps({"segments": payload}, ensure_ascii=False, indent=1)
         )
         content = _chat(cfg, key, VI_SYSTEM, user, log_fn)
@@ -235,8 +240,16 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
         raise RuntimeError("缺少 Agent2 的 asr.json")
 
     total_dur = float(asr.get("duration") or 0) or (float(asr["segments"][-1]["end"]) + 0.5)
+    # 先切超长句：ASR 常把整段口播并成一条 20 多秒的巨句，不切就没有句间槽位，配音无法对齐
+    src_segs = split_long_segments(
+        asr["segments"],
+        max_dur=float(cfg.get("split_max_dur", 5.0)),
+        max_chars=int(cfg.get("split_max_chars", 30)),
+    )
+    if len(src_segs) != len(asr["segments"]):
+        log_fn(f"  [3/4 翻译] 超长句切分：{len(asr['segments'])} → {len(src_segs)} 条")
     slots = compute_slots(
-        asr["segments"], total_dur,
+        src_segs, total_dur,
         gap_use=float(cfg.get("gap_use", 0.95)), gap=float(cfg.get("gap", 0.04)),
     )
     sps = float(cfg.get("vi_syllables_per_sec", 5.6))
@@ -245,7 +258,7 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
     if not bool(cfg.get("enabled", True)):
         log_fn("  [3/4 翻译] LLM 已禁用，仅落原文")
         segs = []
-        for s, (start, slot) in zip(asr["segments"], slots):
+        for s, (start, slot) in zip(src_segs, slots):
             segs.append({**s, "zh": s["text"], "vi": "", "slot": round(slot, 3),
                          "max_syl": max(2, int(round((slot - head_line) * sps)))})
         data = {"gender": asr.get("gender"), "segments": segs, "llm": "disabled"}
@@ -262,7 +275,7 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
         )
 
     segments = []
-    for s, (start, slot) in zip(asr["segments"], slots):
+    for s, (start, slot) in zip(src_segs, slots):
         segments.append({
             **s,
             "zh": s["text"],
