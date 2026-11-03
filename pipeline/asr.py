@@ -208,14 +208,97 @@ def _prompt_leaked(prompt: str, segments: list) -> bool:
     return any(f in text for f in frags)
 
 
+# whisper 在「纯音乐段」或「口播被 BGM 盖住」的段落上会吐固定套话
+# （中文 large-v3 最典型的是 YouTube 字幕组鸣谢）。这些词带货口播不会说，命中即判幻觉。
+_HALLUC_RE = re.compile(
+    r"请不吝点赞|点赞订阅|订阅转发|订阅频道|打赏支持|打赏|明镜与点点|字幕志愿者|字幕组|"
+    r"字幕由.{0,8}(提供|制作|翻译)|Amara\.org|优优独播|YoYo\s*Television|"
+    r"感谢观看|谢谢收看|本视频由.{0,10}制作",
+    re.I,
+)
+
+
+def _chars(text: str) -> int:
+    return len(re.sub(r"\s+", "", text or ""))
+
+
+def _is_halluc(item: dict, cfg: dict | None = None) -> bool:
+    """判断一条转写结果是不是 whisper 幻觉（音乐段固定套话），命中任一即算：
+
+    1. 命中固定套话词表——"打赏支持""字幕志愿者"这类词不出现在带货口播里；
+    2. no_speech_prob 高（>= halluc_nsp）且文字密度极低；
+    3. 段落很长（>= halluc_long_sec）却每秒不到 2 个字——真人连说 10 秒不可能这么稀。
+
+    026 的实例：61.88-89.08 一条 27.2s 只 12 个字（0.44 字/秒）、no_speech_prob=0.95，
+    被判 no_speech 却照样输出，把尾巴 30 秒真口播顶掉了。
+    """
+    cfg = cfg or {}
+    text = item.get("text") or ""
+    dur = max(0.01, float(item["end"]) - float(item["start"]))
+    dens = _chars(text) / dur
+    nsp = float(item.get("no_speech_prob") or 0.0)
+    if _HALLUC_RE.search(text):
+        return True
+    if nsp >= float(cfg.get("halluc_nsp", 0.6)) and dens < float(cfg.get("halluc_min_density", 2.0)):
+        return True
+    if dur >= float(cfg.get("halluc_long_sec", 10.0)) and dens < 2.0:
+        return True
+    # 片头 2 秒内的孤立短段：开头是纯音乐，whisper 常在这里编一句问候语
+    # （026 的"你能再说一遍吗?"，no_speech_prob 0.53）。真口播的 nsp 一般在 0.3 以下。
+    if nsp >= 0.5 and dur <= 2.5 and float(item["start"]) < 2.0:
+        return True
+    return False
+
+
+# 句首幻觉套话：整条判定抓不到它，因为它和真口播被并成了同一条
+# （026 的 0.00-3.14s「你能再说一遍吗，睡觉睡得好」）。
+_HALLUC_LEAD_RE = re.compile(r"^(?:你能再说一遍吗|请不吝点赞|欢迎收看|感谢观看)[?？]?[，,。.、；;\s]*")
+
+
+def _clean_text(items: list, log_fn=None) -> list:
+    """清句首幻觉套话与切分残渣（孤立"的"），清过的段丢掉 words 以免时间轴对不上。"""
+    n = 0
+    for it in items:
+        text = it.get("text") or ""
+        m = _HALLUC_LEAD_RE.match(text)
+        if m and _chars(text[m.end():]) >= 2:
+            text = text[m.end():]
+        if text[:1] == "的" and _chars(text) > 3 and text[1:2] != "话":
+            text = text[1:]
+        if text != (it.get("text") or ""):
+            it["text"] = text.strip("，,。.、；; ")
+            it.pop("words", None)   # 词级时间戳已和正文错位，交由第 3 步按标点比例切
+            n += 1
+    if n and log_fn:
+        log_fn(f"  [2/4 转写] 清理 {n} 条句首幻觉/残渣")
+    return items
+
+
+def _drop_halluc(segments: list, cfg: dict, log_fn=None) -> tuple:
+    """剔除疑似幻觉，返回 (保留, 剔除)。剔除项要留痕，方便人工复核。"""
+    keep, drop = [], []
+    for s in segments:
+        (drop if _is_halluc(s, cfg) else keep).append(s)
+    if drop and log_fn:
+        sample = "；".join(f"{d['start']:.1f}-{d['end']:.1f}s「{d['text'][:20]}」" for d in drop[:3])
+        log_fn(f"  [2/4 转写] 剔除 {len(drop)} 条疑似幻觉：{sample}")
+    return keep, drop
+
+
+def _gaps(segments: list, total_dur: float, min_sec: float = 0.0) -> list:
+    """所有 >= min_sec 的空白间隔（含首尾），按从大到小排：[(间隔, 起, 止), ...]。"""
+    spans, prev = [], 0.0
+    for s in sorted(segments, key=lambda x: float(x["start"])):
+        spans.append((prev, float(s["start"])))
+        prev = max(prev, float(s["end"]))
+    spans.append((prev, total_dur))
+    return sorted([(b - a, a, b) for a, b in spans if b - a >= min_sec], key=lambda g: -g[0])
+
+
 def _max_gap(segments: list, total_dur: float) -> tuple:
     """转写结果里最大的空白间隔（含首尾），返回 (间隔, 起, 止)。"""
-    gaps, prev = [], 0.0
-    for s in segments:
-        gaps.append((float(s["start"]) - prev, prev, float(s["start"])))
-        prev = float(s["end"])
-    gaps.append((max(0.0, total_dur - prev), prev, total_dur))
-    return max(gaps, key=lambda g: g[0]) if gaps else (0.0, 0.0, 0.0)
+    gaps = _gaps(segments, total_dur)
+    return gaps[0] if gaps else (0.0, 0.0, 0.0)
 
 
 def _loud(path: Path, a: float, b: float, thr_db: float = -45.0) -> bool:
@@ -228,29 +311,101 @@ def _loud(path: Path, a: float, b: float, thr_db: float = -45.0) -> bool:
     return bool(m) and float(m.group(1)) > thr_db
 
 
-def _fill_gap(model, audio, cfg, ga: float, gb: float, sr: int = 16000, log_fn=log) -> list:
-    """把漏识别空档单独切出来转写（关 VAD），只留落在空档内的结果。
+def _merge_short(items: list, cfg: dict) -> list:
+    """相邻短段合并：小窗口会在句子中间切开，合回去减少碎片（否则一句口播碎成三段）。"""
+    gap_max = float(cfg.get("regap_merge_gap", 0.4))
+    span_max = float(cfg.get("regap_merge_span", 7.0))
+    out = []
+    for it in sorted(items, key=lambda x: float(x["start"])):
+        it = dict(it)
+        if out:
+            prev = out[-1]
+            gap = float(it["start"]) - float(prev["end"])
+            span = float(it["end"]) - float(prev["start"])
+            if gap <= gap_max and span <= span_max:
+                prev["text"] = prev["text"].rstrip("，,。.、；; ") + "，" + it["text"].lstrip("，,。.、；; ")
+                prev["end"] = it["end"]
+                prev["no_speech_prob"] = max(float(prev.get("no_speech_prob") or 0.0),
+                                             float(it.get("no_speech_prob") or 0.0))
+                # 词级时间戳必须跟着合并：第 3 步靠 words 判断句子边界和时长，
+                # 只拼 text 不拼 words 会让 words 只覆盖前半段，切分时后半句直接丢
+                # （026 的 id 2/3/4/18/19 就是这么被砍掉的）。
+                prev["words"] = list(prev.get("words") or []) + list(it.get("words") or [])
+                continue
+        out.append(it)
+    return out
 
-    整片重跑没用：whisper 对长音频前段的音乐/前奏会整段判 no_speech，
-    切出这 30 秒单独跑就能正常识别（026 前 30s 的 16 句就是这么补回来的）。
+
+def _dedup_overlap(items: list) -> list:
+    """同一句话被相邻窗口各识别一次时只留最完整的那个。
+
+    判重看时间重叠：重叠超过较短一方的一半即视为同一句，保留字数多的版本
+    （窗口边界会把句子切成"其实判断身体好不好"和"不判断身体好不好"两份）。
     """
-    a = max(0, int((ga - 0.5) * sr))
-    b = min(len(audio), int((gb + 0.5) * sr))
-    if b - a < sr:
+    out = []
+    for it in sorted(items, key=lambda x: (float(x["start"]), -_chars(x.get("text", "")))):
+        hit = None
+        for o in out:
+            ov = min(float(it["end"]), float(o["end"])) - max(float(it["start"]), float(o["start"]))
+            if ov > 0:
+                short = min(float(it["end"]) - float(it["start"]), float(o["end"]) - float(o["start"]))
+                if ov >= 0.5 * short:
+                    hit = o
+                    break
+        if hit is None:
+            out.append(it)
+        elif _chars(it.get("text", "")) > _chars(hit.get("text", "")):
+            out[out.index(hit)] = it
+    return out
+
+
+def _fill_gap(model, audio, cfg, ga: float, gb: float, sr: int = 16000, log_fn=log) -> list:
+    """把漏识别空档切成小窗口（默认 5s，步进 2s 有重叠）逐段转写，只留落在空档内的结果。
+
+    为什么要切小：whisper 一次喂 30 秒「口播被 BGM 压低」的内容，会直接编出一整段
+    固定套话幻觉（026 尾部那条 27 秒的"请不吝点赞 订阅 转发 打赏支持明镜与点点栏目"，
+    no_speech_prob 0.95）。同样的音频切成 5 秒喂进去，模型就没有空间编长段，
+    12 句真口播全能出来；切 8 秒则 75-83s 那一段仍然幻觉，所以默认取 5。
+    窗口之间有重叠，避免句子正好落在切点上被切掉（无重叠时会丢"其实""常说男人靠睡"）。
+    """
+    win = max(2.0, float(cfg.get("regap_window_sec", 5.0)))
+    hop = max(0.5, min(win, float(cfg.get("regap_hop_sec", 2.0))))
+    a_all = max(0, int((ga - 0.4) * sr))
+    b_all = min(len(audio), int((gb + 0.4) * sr))
+    if b_all - a_all < sr * 0.5:
         return []
-    # 补漏切片要最宽松的判定：这段本来就是被判成"无人声"的地方，
+    # 补漏要最宽松的判定：这段本来就是被判成"无人声"的地方，
     # 阈值不放开、还带着 initial_prompt，whisper 会继续只吐一两条。
     kw = dict(cfg)
     kw["vad_filter"] = False
-    kw["no_speech_threshold"] = 0.2
+    kw["no_speech_threshold"] = float(cfg.get("regap_no_speech", 0.4))
     kw["initial_prompt"] = ""
     kw["condition_on_previous_text"] = False
-    out, offset = [], a / sr
-    for seg, off, _info in _iter_segments(model, audio[a:b], kw, sr, log_fn=lambda *_: None):
-        item = _mk_item(seg, offset + off, len(out) + 1)
-        if item and item["start"] >= ga - 0.3 and item["end"] <= gb + 0.3:
-            out.append(item)
-    return out
+    out = []
+    win_n = int(round(win * sr))
+    hop_n = int(round(hop * sr))
+    t = a_all
+    while t < b_all:
+        piece = audio[t:min(b_all, t + win_n)]
+        if len(piece) >= sr * 0.4:
+            start_off = t / sr
+            stop_off = start_off + len(piece) / sr
+            for seg, off, _info in _iter_segments(model, piece, kw, sr, log_fn=lambda *_: None):
+                item = _mk_item(seg, start_off + off, len(out) + 1)
+                if not item:
+                    continue
+                # 短音频会被 whisper padding 到 30s，幻觉时间戳能越过窗口尾巴，按窗口硬裁
+                item["start"] = max(float(item["start"]), start_off)
+                item["end"] = min(float(item["end"]), stop_off)
+                if item["end"] - item["start"] < 0.2 or item["start"] < ga - 0.4:
+                    continue
+                # 先剔幻觉再去重：否则一条长套话会在去重时把同区间的真识别结果顶掉，
+                # 幻觉随后被过滤，那段真口播就凭空消失了。
+                if _is_halluc(item, cfg):
+                    continue
+                out.append(item)
+        t += hop_n
+    return _merge_short(_dedup_overlap(out), cfg)
 
 
 # ---------------------------------------------------------------- 主流程
@@ -286,18 +441,37 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
             kw["initial_prompt"] = ""
             segments, info = _transcribe(model, audio, kw, log_fn=log_fn)
 
-        # 漏识别自检：中间出现大段空档、可那段人声里明明有话，说明 VAD/no_speech 把整段滤掉了。
-        # 这种漏识别比配音音色问题严重得多——观众会直接听丢整段卖点，所以关掉 VAD 重跑一次。
         total_dur = media_duration(job.media)
-        gap, ga, gb = _max_gap(segments, total_dur)
-        if gap >= float(cfg.get("regap_min_sec", 8.0)) and _loud(vocal, ga, gb):
+        # 先剔幻觉：whisper 的套话幻觉会把自己伪装成"有内容"，把真实空档填满，
+        # 让下面的漏识别自检看不见那个洞（026 尾巴 30 秒真口播就是这么丢的）。
+        segments, dropped = _drop_halluc(segments, cfg, log_fn=log_fn)
+        segments = _clean_text(segments, log_fn=log_fn)
+
+        # 漏识别自检：中间出现大段空档、可那段人声里明明有话，说明 VAD/no_speech 把整段滤掉了。
+        # 这种漏识别比配音音色问题严重得多——观众会直接听丢整段卖点，所以关掉 VAD 切片重转。
+        # 多轮：剔掉幻觉后尾部常常才暴露出大空档，一轮只补最大的一处不够。
+        min_sec = float(cfg.get("regap_min_sec", 8.0))
+        rounds = max(1, int(cfg.get("regap_max_rounds", 3)))
+        for i, (gap, ga, gb) in enumerate(_gaps(segments, total_dur, min_sec)):
+            if i >= rounds:
+                break
+            if not _loud(vocal, ga, gb):
+                log_fn(f"  [2/4 转写] {ga:.1f}-{gb:.1f}s 空了 {gap:.1f}s，该段无声音，按真空白处理")
+                continue
             log_fn(f"  [2/4 转写] {ga:.1f}-{gb:.1f}s 空了 {gap:.1f}s 但该段有人声，判为漏识别，切片补回")
             extra = _fill_gap(model, audio, kw, ga, gb, 16000, log_fn=log_fn)
-            if extra:
-                log_fn(f"  [2/4 转写] 空档补回 {len(extra)} 条（{len(segments)} → {len(segments) + len(extra)}）")
-                segments = sorted(segments + extra, key=lambda s: float(s["start"]))
-                for i, s in enumerate(segments, 1):
-                    s["id"] = i
+            extra, extra_halluc = _drop_halluc(extra, cfg, log_fn=None)
+            extra = _clean_text(extra)
+            if extra_halluc:
+                log_fn(f"  [2/4 转写] 补回结果里再剔 {len(extra_halluc)} 条幻觉")
+                dropped += extra_halluc
+            if not extra:
+                log_fn(f"  [2/4 转写] 该段补不出有效内容（纯音乐/无口播），跳过")
+                continue
+            log_fn(f"  [2/4 转写] 空档补回 {len(extra)} 条（{len(segments)} → {len(segments) + len(extra)}）")
+            segments = sorted(segments + extra, key=lambda s: float(s["start"]))
+            for idx, s in enumerate(segments, 1):
+                s["id"] = idx
 
     if not segments:
         raise RuntimeError("ASR 未识别到任何文本，请检查人声音轨（可能整段是 BGM 或被判为静音）")
@@ -312,6 +486,8 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
         "gender": gender,
         "segment_count": len(segments),
         "segments": segments,
+        # 被剔除的疑似幻觉，留档便于人工复核（不影响下游，只是证据）
+        "dropped": dropped,
     }
     write_json(out_json, data)
 

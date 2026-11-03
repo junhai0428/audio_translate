@@ -291,6 +291,10 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
     far_over = sum(1 for t in tempos if t > 1.45)
     done = [it for it in items if it.get("ok")]
     avg_fill = round(sum(float(it.get("fill") or 0) for it in done) / max(1, len(done)), 3)
+    # 填充率极低的句子 = 长空白被当成一句话：多半是 ASR 幻觉或漏识别留下的洞，
+    # 下游听感就是"大段静音里蹦几个词"，必须报出来，别等人工听完整条配音才发现。
+    fill_warn = float(cfg.get("low_fill_warn", 0.35))
+    low_fill = [it.get("id") for it in done if float(it.get("fill") or 0) < fill_warn]
     stats = {
         "voice": voice,
         "gender": gender,
@@ -301,6 +305,7 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
         "max_tempo": round(max(tempos), 3) if tempos else 1.0,
         "over_1_45": far_over,
         "avg_fill": avg_fill,
+        "low_fill_ids": low_fill,
         "duration": media_duration(out_mp3),
         "target_duration": round(total_dur, 3),
     }
@@ -318,4 +323,9 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
         f"  [4/4 配音] 完成：{placed}/{len(items)} 句，平均倍速 {stats['avg_tempo']}x，"
         f"槽位填充 {avg_fill:.0%}，时长 {stats['duration']:.2f}s / 目标 {total_dur:.2f}s"
     )
+    if low_fill:
+        log_fn(
+            f"  [4/4 配音] 警告：{len(low_fill)} 句填充率 < {fill_warn:.0%}（id={low_fill[:8]}），"
+            f"多为长空白被当成句子（ASR 幻觉/漏识别），建议复查 02_asr/asr.json"
+        )
     return {"voice": str(out_mp3), "wav": str(out_wav), **stats}

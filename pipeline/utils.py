@@ -191,6 +191,10 @@ def _split_one(seg: dict, max_dur: float, max_chars: int, min_dur: float) -> lis
         return [{"start": start, "end": end, "text": text}]
 
     words = seg.get("words") or []
+    # 词级时间戳覆盖率校验：words 明显没盖住整段时（末尾差 1 秒以上）不可信，
+    # 否则按词切出来的块只到 words 末尾，后半句文本随之丢掉。
+    if words and (float(words[-1]["e"]) < end - 1.0 or float(words[0]["s"]) > start + 1.0):
+        words = []
     if not words:
         parts = [p for p in re.split(r"(?<=[%s])" % re.escape(PUNCT_BREAK), text) if p.strip()]
         dur = end - start
