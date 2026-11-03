@@ -148,8 +148,9 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
     min_slot = float(cfg.get("min_slot", 0.35))
     max_tempo = float(cfg.get("max_tempo", 1.85))
     resynth_thr = float(cfg.get("resynth_threshold", 1.12))
-    min_fill = float(cfg.get("min_fill", 0.8))       # 低于此填充率就放慢铺满
-    max_slow = float(cfg.get("max_slow", 1.3))       # 最多放慢几倍（越大越慢、越满）
+    min_fill = float(cfg.get("min_fill", 0.95))      # 低于此填充率就放慢铺满
+    max_slow = float(cfg.get("max_slow", 1.5))       # 最多放慢几倍（越大越慢、越满）
+    slow_slot_cap = float(cfg.get("slow_slot_cap", 8.0))  # 槽位超过这么多秒的长空白不放慢
     total_dur = float(data.get("duration") or media_duration(job.media) or 0)
     if total_dur <= 0:
         total_dur = max(float(s["end"]) for s in segs) + 0.5
@@ -226,8 +227,10 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
         tempo = 1.0
         if dur > it["slot"] * 1.02:
             tempo = min(max_tempo, dur / it["slot"])
-        elif dur < it["slot"] * min_fill:
-            # 偏短：放慢到接近填满槽位（atempo<1，音高不变），把句间空白用掉
+        elif dur < it["slot"] * min_fill and it["slot"] <= slow_slot_cap:
+            # 偏短：放慢到接近填满槽位（atempo<1，音高不变），把句间空白用掉。
+            # 槽位大过 slow_slot_cap 的是片头/间奏的长空白被误判成句，放慢也填不满，
+            # 只会把一句话拖得发飘，保持原速。
             tempo = max(1.0 / max_slow, dur / (it["slot"] * min_fill))
         _tempo(it["wav"], it["final"], tempo, sr)
         it["tempo"] = tempo
