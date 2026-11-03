@@ -18,7 +18,8 @@ import threading
 from pathlib import Path
 
 from .config import Job, resolve_whisper_model
-from .utils import ensure_dir, log, media_duration, read_json, to_wav, write_json
+from .utils import (FFMPEG, ensure_dir, log, media_duration, read_json, run, to_wav,
+                    write_json)
 
 STAGE = 2
 
@@ -207,6 +208,51 @@ def _prompt_leaked(prompt: str, segments: list) -> bool:
     return any(f in text for f in frags)
 
 
+def _max_gap(segments: list, total_dur: float) -> tuple:
+    """转写结果里最大的空白间隔（含首尾），返回 (间隔, 起, 止)。"""
+    gaps, prev = [], 0.0
+    for s in segments:
+        gaps.append((float(s["start"]) - prev, prev, float(s["start"])))
+        prev = float(s["end"])
+    gaps.append((max(0.0, total_dur - prev), prev, total_dur))
+    return max(gaps, key=lambda g: g[0]) if gaps else (0.0, 0.0, 0.0)
+
+
+def _loud(path: Path, a: float, b: float, thr_db: float = -45.0) -> bool:
+    """[a,b) 这段有没有明显声音，用来区分「真空白」和「ASR 漏识别」。"""
+    dur = max(0.1, b - a)
+    proc = run([FFMPEG, "-hide_banner", "-nostats", "-ss", f"{a:.2f}", "-t", f"{dur:.2f}",
+                "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
+               quiet=True, check=False)
+    m = re.search(r"mean_volume:\s*(-?[\d.]+)", (proc.stderr or "") + (proc.stdout or ""))
+    return bool(m) and float(m.group(1)) > thr_db
+
+
+def _fill_gap(model, audio, cfg, ga: float, gb: float, sr: int = 16000, log_fn=log) -> list:
+    """把漏识别空档单独切出来转写（关 VAD），只留落在空档内的结果。
+
+    整片重跑没用：whisper 对长音频前段的音乐/前奏会整段判 no_speech，
+    切出这 30 秒单独跑就能正常识别（026 前 30s 的 16 句就是这么补回来的）。
+    """
+    a = max(0, int((ga - 0.5) * sr))
+    b = min(len(audio), int((gb + 0.5) * sr))
+    if b - a < sr:
+        return []
+    # 补漏切片要最宽松的判定：这段本来就是被判成"无人声"的地方，
+    # 阈值不放开、还带着 initial_prompt，whisper 会继续只吐一两条。
+    kw = dict(cfg)
+    kw["vad_filter"] = False
+    kw["no_speech_threshold"] = 0.2
+    kw["initial_prompt"] = ""
+    kw["condition_on_previous_text"] = False
+    out, offset = [], a / sr
+    for seg, off, _info in _iter_segments(model, audio[a:b], kw, sr, log_fn=lambda *_: None):
+        item = _mk_item(seg, offset + off, len(out) + 1)
+        if item and item["start"] >= ga - 0.3 and item["end"] <= gb + 0.3:
+            out.append(item)
+    return out
+
+
 # ---------------------------------------------------------------- 主流程
 def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
     cfg = job.cfg["asr"]
@@ -239,6 +285,19 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
             log_fn("  [2/4 转写] 检测到 initial_prompt 泄漏到转写结果（whisper 幻觉），去掉提示词重跑")
             kw["initial_prompt"] = ""
             segments, info = _transcribe(model, audio, kw, log_fn=log_fn)
+
+        # 漏识别自检：中间出现大段空档、可那段人声里明明有话，说明 VAD/no_speech 把整段滤掉了。
+        # 这种漏识别比配音音色问题严重得多——观众会直接听丢整段卖点，所以关掉 VAD 重跑一次。
+        total_dur = media_duration(job.media)
+        gap, ga, gb = _max_gap(segments, total_dur)
+        if gap >= float(cfg.get("regap_min_sec", 8.0)) and _loud(vocal, ga, gb):
+            log_fn(f"  [2/4 转写] {ga:.1f}-{gb:.1f}s 空了 {gap:.1f}s 但该段有人声，判为漏识别，切片补回")
+            extra = _fill_gap(model, audio, kw, ga, gb, 16000, log_fn=log_fn)
+            if extra:
+                log_fn(f"  [2/4 转写] 空档补回 {len(extra)} 条（{len(segments)} → {len(segments) + len(extra)}）")
+                segments = sorted(segments + extra, key=lambda s: float(s["start"]))
+                for i, s in enumerate(segments, 1):
+                    s["id"] = i
 
     if not segments:
         raise RuntimeError("ASR 未识别到任何文本，请检查人声音轨（可能整段是 BGM 或被判为静音）")

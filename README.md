@@ -248,13 +248,17 @@ pip install "tokenizers>=0.21,<1" -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 会让 transformers 4.46.3 的约束告警，但本流水线不用 transformers，可忽略。
 
-**必须做的覆盖率检查**：找出**相邻句间隔 > 4 秒**的位置，逐个人工听源音频确认那里只有 BGM/静音。若有口播被漏，必须重跑并调整：
+**必须做的覆盖率检查**：找出**相邻句间隔 > 4 秒**的位置，确认那里是真空白还是漏识别。
 
-- 关闭 `vad_filter`
-- 提高 `no_speech_threshold`
-- 去掉 `initial_prompt`
+`pipeline/asr.py` 已内置自动自检：最大空档 ≥ `asr.regap_min_sec`（默认 8s）且该段实测有声音
+（`volumedetect` 均值 > -45dB）→ 判为漏识别，把这段**单独切出来重转**，参数放开到
+`vad_filter=False`、`no_speech_threshold=0.2`、`initial_prompt=""`，结果按时间轴合并回去。
 
-> 实战案例：样片 12–33 秒整段口播被漏识别，带 `initial_prompt` 时触发；去掉后恢复正常。
+> 注意：整片关 VAD 重跑**没用**——whisper 对长音频前段的音乐/前奏还是整段判 no_speech。
+> 实战案例：`douyin_026` 前 30 秒整段口播被吞（只吐出一句幻觉"你能再说一遍吗?"），
+> 整片重跑仍是 15 条；切片单独转写一次补回 16 条，配音有声占比 31% → 60%。
+
+手工兜底：`tools/scan_asr.py` 列出所有 >4s 空档，逐个听源音频复核。
 
 **性别判定**：40ms 帧自相关法求 F0 中位数，阈值 **165Hz**（女 ≥165）。中位数离阈值 < 15Hz 时必须标注"临界，建议人工确认"，不要把临界值当结论。
 

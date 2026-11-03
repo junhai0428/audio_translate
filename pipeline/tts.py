@@ -151,7 +151,11 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
     min_fill = float(cfg.get("min_fill", 0.95))      # 低于此填充率就放慢铺满
     max_slow = float(cfg.get("max_slow", 1.5))       # 最多放慢几倍（越大越慢、越满）
     slow_slot_cap = float(cfg.get("slow_slot_cap", 8.0))  # 槽位超过这么多秒的长空白不放慢
-    total_dur = float(data.get("duration") or media_duration(job.media) or 0)
+    # 总长以源视频为准：ASR/翻译链路的 duration 可能只到最后一句话，
+    # 若用它建轨，尾部那段（片尾曲/定格）就不在配音轨里，下游合成会整体对不齐。
+    media_dur = float(media_duration(job.media) or 0)
+    asr_dur = float(data.get("duration") or 0)
+    total_dur = max(media_dur, asr_dur)
     if total_dur <= 0:
         total_dur = max(float(s["end"]) for s in segs) + 0.5
 
