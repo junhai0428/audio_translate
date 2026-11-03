@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import subprocess
 import sys
 import threading
@@ -30,7 +29,11 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 # 源素材命名：douyin_012 / bz_051 / 012（只允许"前缀_编号"或纯编号）
-_SOURCE_STEM = re.compile(r"^([A-Za-z0-9\u4e00-\u9fff]+_)?\d+$")
+# 与 pipeline.config.JOB_NAME 同一套规则，工单名 = 源素材基名
+from pipeline.config import JOB_NAME as _SOURCE_STEM  # noqa: E402
+
+# 素材目录里常见的历史派生子目录，里面的片子不参与批量处理
+_SKIP_DIRS = {"花字多", "tmp", "temp", "output", "成片", "导出", "_vsr_batch"}
 
 
 # ---------------------------------------------------------------- 线程/进度环境
@@ -107,28 +110,38 @@ def collect_medias(inputs: list, exts: list, temp_name: str = "temp") -> list:
     花字多/tmp/output/_vsr_batch 等子目录。这些音轨与源片相同，若当成独立素材
     会重复跑整条流水线并产出重复交付，所以默认只处理命名规范的源文件。
     """
-    found = []   # [(文件, 所属根目录)]
+    found = []   # [(文件, 所属根目录, 产品单元)]
     for item in inputs:
         p = Path(item)
         if p.is_dir():
+            files = []
             for f in sorted(p.rglob("*")):
                 if not (f.is_file() and f.suffix.lower() in exts):
                     continue
                 rel = f.relative_to(p)
                 if any(part.startswith("_") for part in rel.parts[:-1]):
                     continue
+                if any(part.lower() in _SKIP_DIRS for part in rel.parts[:-1]):
+                    continue
                 if any(par.name.lower() == temp_name.lower() for par in f.parents):
                     continue
                 if not _SOURCE_STEM.match(f.stem):
                     continue
-                found.append((f, p))
+                files.append(f)
+            # p 下有直属源文件 → p 本身就是一个产品，子目录（花字多/…）全是杂项；
+            # 否则 p 是容器（如 000视频素材），每个直接子目录是一个产品
+            root_direct = any(f.parent == p for f in files)
+            for f in files:
+                rel = f.relative_to(p)
+                product = "" if root_direct else (rel.parts[0] if len(rel.parts) > 1 else "")
+                found.append((f, p, product))
         elif p.is_file() and p.suffix.lower() in exts:
-            found.append((p, p.parent))
-    # 同一根目录下同名只保留路径最浅的（花字多/子目录里的同源副本让位给顶层）；
-    # 不同产品目录的同名素材（各自的 douyin_052）必须都保留
+            found.append((p, p.parent, ""))
+    # 去重单元 = 「产品目录」：不同产品的同名 douyin_012 必须都保留，
+    # 同一产品下的子目录副本让位给路径最浅的顶层文件
     best = {}
-    for f, root in found:
-        key = (str(root).lower(), f.stem.lower())
+    for f, root, product in found:
+        key = (str(root).lower(), product.lower(), f.stem.lower())
         if key not in best or len(f.parts) < len(best[key].parts):
             best[key] = f
     return sorted(best.values(), key=lambda x: str(x).lower())
@@ -168,12 +181,11 @@ class Heartbeat(threading.Thread):
         self.stop_event.set()
 
 
-def process_one(media: Path, cfg: dict, stages: list, force: bool, heartbeat: Heartbeat,
-                prefix: str = "") -> dict:
+def process_one(media: Path, cfg: dict, stages: list, force: bool, heartbeat: Heartbeat) -> dict:
     from pipeline.config import Job
     from pipeline.utils import Logger, PipelineError, log
 
-    job = Job(media, cfg, name=(prefix + media.stem) if prefix else None)
+    job = Job(media, cfg)
     logger = Logger(job.work / "run.log")
     log_fn = lambda msg, _l=logger: log(msg, _l)  # noqa: E731
     log_fn(f"\n=== {media.name} ===")
@@ -244,7 +256,6 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0, help="最多处理几个音频")
     parser.add_argument("--list", action="store_true", help="只列出待处理音频")
     parser.add_argument("-c", "--config", default=None, help="配置文件名")
-    parser.add_argument("--prefix", default="", help="工单目录名前缀（默认不需要：temp 归属各自素材目录）")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -263,8 +274,13 @@ def main() -> int:
             "-i \"E:/001.TTS/000视频素材/01.八珍足贴\"")
         return 1
     if args.list:
+        cur = None
         for v in medias:
-            log(f"  {v}")
+            if v.parent != cur:
+                cur = v.parent
+                log(f"[{cur.name}]")
+            log(f"  {v.name}")
+        log(f"合计 {len(medias)} 条（跳过 temp/ 与 _nosub/_vi 等历史派生物）")
         return 0
 
     bootstrap_env(cfg)
@@ -279,10 +295,10 @@ def main() -> int:
     results = []
     if jobs <= 1:
         for v in medias:
-            results.append(process_one(v, cfg, stages, args.force, heartbeat, args.prefix))
+            results.append(process_one(v, cfg, stages, args.force, heartbeat))
     else:
         with ThreadPoolExecutor(max_workers=jobs) as pool:
-            futures = {pool.submit(process_one, v, cfg, stages, args.force, heartbeat, args.prefix): v
+            futures = {pool.submit(process_one, v, cfg, stages, args.force, heartbeat): v
                        for v in medias}
             for fut in as_completed(futures):
                 results.append(fut.result())

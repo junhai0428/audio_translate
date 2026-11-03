@@ -91,8 +91,9 @@
 ├── pipeline/                separate / asr / translate / tts
 ├── tools/step3_helper.py    第 3 步辅助：超长句切分 + 合稿算预算
 ├── tools/acceptance.py      调度验收：时长/峰值/起句对齐/字符残留
-├── tools/export_bundle.py   补齐交付 + 清理旧规范残留文件
-├── tools/migrate_layout.py  一次性迁移：work/output → 素材目录 temp（历史遗留，可删）
+├── tools/audit_deliver.py   交付体检：源 ↔ 两个交付音轨，--fix 补 BGM、清旧命名
+├── tools/export_bundle.py   从 temp 补齐交付 + 清理旧规范残留文件
+├── tools/mksilent.py        无口播片写空译文（第 4 步出等长静音轨）
 ├── run.py                   批量调度（断点续跑、并行、心跳）
 ├── config.json              全部参数（audio_exts / stages = 1..4 / media_roots）
 ├── README.md                ← 本文档（唯一说明书）
@@ -179,11 +180,15 @@ E:/Projects/whisper_env/Scripts/python.exe tools/step3_helper.py split  "<工单
 E:/Projects/whisper_env/Scripts/python.exe tools/step3_helper.py build "<工单目录>"   # 合稿 → segments_vi.json/zh_opt.txt/vi.txt + 预算校验
 E:/Projects/whisper_env/Scripts/python.exe run.py -i "<源素材>" --stages 4             # 配音
 
-# 辅助检查（都按 config.media_roots 自动找 temp/）
-E:/Projects/whisper_env/Scripts/python.exe tools/check_len.py       # 音节超长句 → reports/_over_len.txt
-E:/Projects/whisper_env/Scripts/python.exe tools/acceptance.py      # 全量验收：时长/峰值/逐句有声/字符残留
-E:/Projects/whisper_env/Scripts/python.exe tools/scan_asr.py        # 幻觉/无人声体检
+# 辅助检查（都按 config.media_roots 自动找 temp/，只认合法工单，跳过 _语速试听/_nosub 等目录）
+E:/Projects/whisper_env/Scripts/python.exe tools/audit_deliver.py            # 交付体检：源 ↔ 配音/背景声，--fix 补齐
+E:/Projects/whisper_env/Scripts/python.exe tools/acceptance.py              # 全量验收：时长/峰值/逐句有声/字符残留
+E:/Projects/whisper_env/Scripts/python.exe tools/check_len.py               # 音节超长句 → reports/_over_len.txt
+E:/Projects/whisper_env/Scripts/python.exe tools/qc_translate.py            # 翻译体检：结构/长度/合规/数字 → reports/_qc.md
+E:/Projects/whisper_env/Scripts/python.exe tools/scan_halluc.py [--fix]     # 幻觉句体检 / 清空
+E:/Projects/whisper_env/Scripts/python.exe tools/scan_asr.py                # 幻觉/无人声体检
 E:/Projects/whisper_env/Scripts/python.exe tools/show_asr.py <工单名>
+E:/Projects/whisper_env/Scripts/python.exe tools/mksilent.py <工单名>        # 无口播片写空译文（出静音轨）
 ```
 
 ## 六、三个硬约束

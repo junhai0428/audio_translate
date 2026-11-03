@@ -36,7 +36,8 @@ def check_job(wd: Path, site: str) -> tuple[list, dict]:
     data = json.loads(sp.read_text(encoding="utf-8"))
     segs = data.get("segments") or []
     issues = []
-    prev_vi = None
+    prev_vi = prev_zh = None
+    silent = 0
     tot_syl = tot_cap = 0
     for s in segs:
         sid, zh, vi = s.get("id"), (s.get("zh") or ""), (s.get("vi") or "").strip()
@@ -45,7 +46,10 @@ def check_job(wd: Path, site: str) -> tuple[list, dict]:
         tot_syl += n
         tot_cap += cap
         if not vi:
-            issues.append((site, wd.name, sid, "空译文", zh, ""))
+            # 空译文不是漏译：scan_halluc --fix 会把幻觉句的译文清空，
+            # 第 4 步按静音处理。这里只计数，不算硬伤。
+            silent += 1
+            prev_vi, prev_zh = None, None
             continue
         if HAN.search(vi):
             issues.append((site, wd.name, sid, "含中文字符", zh, vi))
@@ -69,11 +73,12 @@ def check_job(wd: Path, site: str) -> tuple[list, dict]:
             issues.append((site, wd.name, sid, f"品牌/英文缺失 {missb}", zh, vi))
         if zh and n < max(2, len(HAN.findall(zh)) * 0.5):
             issues.append((site, wd.name, sid, f"疑似漏译 {n}音节/{len(HAN.findall(zh))}字", zh, vi))
-        if prev_vi and vi == prev_vi and n > 2:
+        # 原文本身就在重复口播（zh 相同）时，译文跟着重复是对的，不算问题
+        if prev_vi and vi == prev_vi and n > 2 and zh != prev_zh:
             issues.append((site, wd.name, sid, "与上句完全重复", zh, vi))
-        prev_vi = vi
+        prev_vi, prev_zh = vi, zh
     stat = {"job": wd.name, "site": site, "segs": len(segs), "syl": tot_syl, "cap": tot_cap,
-            "use": round(tot_syl / max(1, tot_cap), 3)}
+            "silent": silent, "use": round(tot_syl / max(1, tot_cap), 3)}
     return issues, stat
 
 
@@ -99,6 +104,8 @@ def main() -> None:
              f"- 工单 {len(stats)} 条，句子 {sum(s['segs'] for s in stats)} 句",
              f"- 音节 {sum(s['syl'] for s in stats)} / 预算 {sum(s['cap'] for s in stats)}"
              f"（占用 {sum(s['syl'] for s in stats)/max(1,sum(s['cap'] for s in stats)):.2f}）",
+             f"- 静音句 {sum(s.get('silent', 0) for s in stats)} 句"
+             f"（幻觉清空 / 无口播，第 4 步按静音处理，不算问题）",
              f"- 问题 {len(all_issues)} 条", ""]
     by_kind = {}
     for it in all_issues:
@@ -121,7 +128,8 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    print(f"工单 {len(stats)}，句子 {sum(s['segs'] for s in stats)}，问题 {len(all_issues)}")
+    print(f"工单 {len(stats)}，句子 {sum(s['segs'] for s in stats)}，"
+          f"静音句 {sum(s.get('silent', 0) for s in stats)}，问题 {len(all_issues)}")
     for k, v in sorted(by_kind.items(), key=lambda x: -len(x[1])):
         print(f"  {k:16}{len(v)}")
     print(f"\n明细 → {out}")

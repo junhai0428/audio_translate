@@ -21,11 +21,9 @@ from pipeline.utils import count_vi_syllables, read_json, write_json  # noqa: E4
 from tools.step3_helper import cmd_build  # noqa: E402
 
 SRC = ROOT / "reports" / "_new_vi"
-SPS = 5.0
-HEAD = 0.2
 
 
-def apply_one(wd: Path, build: bool) -> None:
+def apply_one(wd: Path, build: bool, sps: float, head: float) -> None:
     site = wd.parent.parent.name
     src = SRC / site / f"{wd.name}.json"
     if not src.is_file():
@@ -56,7 +54,7 @@ def apply_one(wd: Path, build: bool) -> None:
         s = seg.get(int(k))
         if not s:
             continue
-        cap = max(2, round((float(s["slot"]) - HEAD) * SPS))
+        cap = max(2, round((float(s["slot"]) - head) * sps))
         n = count_vi_syllables(vi)
         if n > cap:
             over.append((int(k), n, cap, vi))
@@ -75,6 +73,9 @@ def main() -> None:
     args = [a for i, a in enumerate(argv) if not a.startswith("--") and (i == 0 or not argv[i - 1] == "--site")]
     build = "--no-build" not in argv
     cfg = load_config()
+    tcfg = cfg.get("translate", {})
+    sps = float(tcfg.get("vi_syllables_per_sec", 5.0))
+    head = float(tcfg.get("head_line", 0.2))
     for name in args:
         wd = job_dir(cfg, name)
         if wd is not None and site and wd.parent.parent.name != site:
@@ -83,7 +84,7 @@ def main() -> None:
         if wd is None:
             print(f"[跳过] 找不到 {name}")
             continue
-        apply_one(wd, build)
+        apply_one(wd, build, sps, head)
 
 
 if __name__ == "__main__":

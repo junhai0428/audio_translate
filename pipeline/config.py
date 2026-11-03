@@ -6,11 +6,16 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from .utils import ensure_dir, read_json, write_json
 
 DEFAULT_CONFIG_NAME = "config.json"
+
+# 合法工单名 = 源素材基名：douyin_012 / bz_051 / 012
+# temp 下常混着调试目录（_语速试听）和历史派生物（douyin_003_nosub / _cfr14188），一律不认
+JOB_NAME = re.compile(r"^([A-Za-z0-9\u4e00-\u9fff]+_)?\d+$")
 
 
 def project_root() -> Path:
@@ -44,7 +49,11 @@ def load_config(path=None) -> dict:
 
 
 def iter_job_dirs(cfg: dict, roots=None) -> list:
-    """扫描素材目录下的 <temp>/<工单> 目录（新目录规范）。"""
+    """扫描素材目录下的 <temp>/<工单> 目录（新目录规范）。
+
+    只返回合法工单：temp 下的调试目录（_语速试听）和历史派生物
+    （douyin_003_nosub / _cfr14188 等）不算工单，否则所有统计工具都会把它们算进去。
+    """
     temp_name = str(cfg.get("dirs", {}).get("temp", "temp")).lower()
     roots = roots or cfg.get("media_roots") or []
     out = []
@@ -55,7 +64,7 @@ def iter_job_dirs(cfg: dict, roots=None) -> list:
         # 只认「<素材目录>/temp」两层，不深入 temp 内部（里面有 demucs 中间目录）
         cands = [p for p in list(rp.glob(f"*/{temp_name}")) + list(rp.glob(temp_name)) if p.is_dir()]
         for t in sorted(set(cands)):
-            out += sorted(p for p in t.iterdir() if p.is_dir())
+            out += sorted(p for p in t.iterdir() if p.is_dir() and JOB_NAME.match(p.name))
     return out
 
 

@@ -25,7 +25,6 @@ from pipeline.config import iter_job_dirs, job_dir, load_config  # noqa: E402
 from pipeline.tts import _load_mono, _synth_batch, _trim_to_wav, clean_text  # noqa: E402
 from pipeline.utils import FFMPEG, ensure_dir, media_duration, run  # noqa: E402
 
-SPS_BASE = 3.2          # 当前翻译口径：3.2 音节/秒（rate +0% 下实测）
 DEFAULT_JOBS = ["douyin_188", "douyin_199", "douyin_059"]
 DEFAULT_RATES = [0, 25, 50, 80, 100]
 
@@ -110,6 +109,7 @@ def build_track(wd: Path, segs, rate_pct: int, voice: str, sr: int, gap: float, 
 
 def main() -> None:
     cfg = load_config()
+    sps_base = float(cfg.get("translate", {}).get("vi_syllables_per_sec", 5.0))  # 当前翻译口径
     sr = int(cfg["tts"].get("sample_rate", 44100))
     gap = float(cfg["tts"].get("gap", 0.04)) * 3  # 试听句间留 3 倍常规间隙，听感更自然
     voices = cfg["tts"]["voices"]
@@ -142,9 +142,9 @@ def main() -> None:
                  "-b:a", "192k", str(mp3)], quiet=True)
             wav.unlink(missing_ok=True)
             sps = syl / dur if dur else 0
-            rows.append((name, f"{1 + pct / 100:.2f}x", dur, span, sps, sps / SPS_BASE, mp3.name))
+            rows.append((name, f"{1 + pct / 100:.2f}x", dur, span, sps, sps / sps_base, mp3.name))
             print(f"  +{pct:3d}%  → {dur:6.2f}s / 原片 {span:5.1f}s  实测 {sps:.2f} 音节/秒  "
-                  f"容量 {sps / SPS_BASE:.2f}x  {mp3.name}")
+                  f"容量 {sps / sps_base:.2f}x  {mp3.name}")
 
     print("\n工单          档位     合成时长  原片时长  实测SPS  容量倍数  文件")
     for r in rows:

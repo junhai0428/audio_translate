@@ -1,7 +1,7 @@
 """检查译文音节是否超过槽位预算，输出可直接定位的超长句清单。
 
-预算（max_syl）不落在 zh_split.json 里，是 todo/build 时现算的，
-这里从 reports/_zh_all.txt（name|id|max_syl|中文）读同一份预算，保证口径一致。
+预算（max_syl）直接读第 3 步落盘的 03_translate/segments_vi.json，
+老工单缺该字段时退回 reports/_zh_all.txt（name|id|max_syl|中文）。
 
 用法：python tools/check_len.py            # 全量
 输出：reports/_over_len.txt（工单|id|音节/预算|中文|越南语）
@@ -32,8 +32,25 @@ def count_vi_syllables(text: str) -> int:
     return n
 
 
-def load_budget() -> dict:
-    """(工单, 句号) → max_syl"""
+def load_budget_from_segments(cfg: dict) -> dict:
+    """(工单, 句号) → max_syl，直接取第 3 步落盘的 segments_vi.json。"""
+    out = {}
+    for wd in iter_job_dirs(cfg):
+        sp = wd / "03_translate" / "segments_vi.json"
+        if not sp.is_file():
+            continue
+        try:
+            data = json.loads(sp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for s in data.get("segments") or []:
+            if s.get("max_syl") is not None:
+                out[(wd.name, int(s["id"]))] = int(s["max_syl"])
+    return out
+
+
+def load_budget_fallback() -> dict:
+    """老工单没有 max_syl 时，退回 reports/_zh_all.txt（name|id|max_syl|中文）。"""
     p = REPORTS / "_zh_all.txt"
     out = {}
     if not p.is_file():
@@ -46,9 +63,15 @@ def load_budget() -> dict:
 
 
 def main() -> None:
-    budget = load_budget()
+    cfg = load_config()
+    budget = load_budget_from_segments(cfg)
+    if not budget:
+        budget = load_budget_fallback()
+    if not budget:
+        print("找不到 max_syl：先跑第 3 步，或 step3_helper build 生成 segments_vi.json")
+        return
     rows, total, over, tight = [], 0, 0, []
-    for wd in iter_job_dirs(load_config()):
+    for wd in iter_job_dirs(cfg):
         tp = wd / "03_translate" / "_translated.json"
         if not tp.is_file():
             continue

@@ -1,4 +1,4 @@
-"""翻译体检：按新基准语速（默认 1.65x → 5.4 音节/秒）重新算每句容量，
+"""翻译体检：按 config.translate.vi_syllables_per_sec（当前 5.0 音节/秒）重算每句容量，
 找出"被压得过头"的句子（信息没铺满新容量）。
 
 判据（两条同时看）：
@@ -6,7 +6,7 @@
   target = min(新预算, 中文音节 × 1.45)
   现译音节 < target × 0.75  → 该句信息被砍过，进重翻清单
 
-用法：python tools/audit_translate.py [--sps 5.4] [--thr 0.75]
+用法：python tools/audit_translate.py [--sps 5.0] [--thr 0.75]   # 默认读 config
 输出：reports/_audit.csv（明细） + 控制台汇总
 """
 
@@ -39,7 +39,10 @@ def zh_syllables(zh: str) -> int:
 
 
 def main() -> None:
-    sps = 5.0
+    cfg = load_config()
+    # 默认口径取 config，工具和流水线不能各算一套
+    tcfg = cfg.get("translate", {})
+    sps = float(tcfg.get("vi_syllables_per_sec", 5.0))
     thr = 0.75
     args = sys.argv[1:]
     for i, a in enumerate(args):
@@ -47,8 +50,6 @@ def main() -> None:
             sps = float(args[i + 1])
         elif a == "--thr":
             thr = float(args[i + 1])
-
-    cfg = load_config()
     rows = []
     per_job = []
     for wd in iter_job_dirs(cfg):

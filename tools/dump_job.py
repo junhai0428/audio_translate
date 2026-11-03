@@ -15,12 +15,12 @@ sys.path.insert(0, str(ROOT))
 from pipeline.config import job_dir, load_config  # noqa: E402
 from pipeline.utils import count_vi_syllables  # noqa: E402
 
-SPS = 5.0
-HEAD = 0.2
-
-
 def main() -> None:
     cfg = load_config()
+    # 容量口径跟着 config 走，避免工具和流水线两套数
+    tcfg = cfg.get("translate", {})
+    sps = float(tcfg.get("vi_syllables_per_sec", 5.0))
+    head = float(tcfg.get("head_line", 0.2))
     for name in sys.argv[1:]:
         wd = job_dir(cfg, name)
         if wd is None:
@@ -32,7 +32,7 @@ def main() -> None:
               f"{(data.get('gender') or {}).get('label')}")
         tot_new = tot_old = 0
         for s in segs:
-            cap = max(2, round((float(s["slot"]) - HEAD) * SPS))
+            cap = max(2, round((float(s["slot"]) - head) * sps))
             old = count_vi_syllables(s.get("vi") or "")
             tot_new += cap
             tot_old += old
