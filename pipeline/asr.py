@@ -339,15 +339,19 @@ def _chars(text: str) -> int:
     return len(re.sub(r"\s+", "", text or ""))
 
 
-def _is_halluc(item: dict, cfg: dict | None = None) -> bool:
+def _is_halluc(item: dict, cfg: dict | None = None, next_start: float | None = None) -> bool:
     """判断一条转写结果是不是 whisper 幻觉（音乐段固定套话），命中任一即算：
 
     1. 命中固定套话词表——"打赏支持""字幕志愿者"这类词不出现在带货口播里；
     2. no_speech_prob 高（>= halluc_nsp）且文字密度极低；
-    3. 段落很长（>= halluc_long_sec）却每秒不到 2 个字——真人连说 10 秒不可能这么稀。
+    3. 段落很长（>= halluc_long_sec）却每秒不到 2 个字——真人连说 10 秒不可能这么稀；
+    4. 片头 2 秒内的孤立短段（还要求"孤立"，见下）。
 
     026 的实例：61.88-89.08 一条 27.2s 只 12 个字（0.44 字/秒）、no_speech_prob=0.95，
     被判 no_speech 却照样输出，把尾巴 30 秒真口播顶掉了。
+
+    `next_start`：下一段的起点，用于判断片头短段是否"孤立"。传 None 表示上下文未知
+    （补空档时逐窗转写就是这种情况），此时不套用第 4 条，避免误杀句首。
     """
     cfg = cfg or {}
     text = item.get("text") or ""
@@ -362,8 +366,12 @@ def _is_halluc(item: dict, cfg: dict | None = None) -> bool:
         return True
     # 片头 2 秒内的孤立短段：开头是纯音乐，whisper 常在这里编一句问候语
     # （026 的"你能再说一遍吗?"，no_speech_prob 0.53）。真口播的 nsp 一般在 0.3 以下。
+    # 必须确认"孤立"：088 首句 0.00-2.46s、nsp 0.99，看着像编的，但 0.02s 后就接下一句，
+    # 实测是真口播「之前花大几十买的身体素颜霜可以直接退了」——只按 nsp+时长判会把
+    # 整句开场白误杀（2026-11-05 实际发生，配音轨开头空 2.5s）。
     if nsp >= 0.5 and dur <= 2.5 and float(item["start"]) < 2.0:
-        return True
+        if next_start is not None and float(next_start) - float(item["end"]) > 2.0:
+            return True
     return False
 
 
@@ -374,7 +382,13 @@ def halluc_segments(segments: list, cfg: dict | None = None) -> list:
     老产物若残留"请不吝点赞…明镜与点点栏目"这类套话，翻译出来就是与原文
     完全无关的内容（026 的实例），必须在进入翻译前拦下来。
     """
-    return [s for s in (segments or []) if _is_halluc(s, cfg)]
+    ordered = sorted(segments or [], key=lambda x: float(x["start"]))
+    out = []
+    for i, s in enumerate(ordered):
+        nxt = float(ordered[i + 1]["start"]) if i + 1 < len(ordered) else None
+        if _is_halluc(s, cfg, next_start=nxt):
+            out.append(s)
+    return out
 
 
 # 句首幻觉套话：整条判定抓不到它，因为它和真口播被并成了同一条
@@ -402,10 +416,15 @@ def _clean_text(items: list, log_fn=None) -> list:
 
 
 def _drop_halluc(segments: list, cfg: dict, log_fn=None) -> tuple:
-    """剔除疑似幻觉，返回 (保留, 剔除)。剔除项要留痕，方便人工复核。"""
+    """剔除疑似幻觉，返回 (保留, 剔除)。剔除项要留痕，方便人工复核。
+
+    按时间排序后带上"下一段起点"再判——片头短段的幻觉判定依赖它是否孤立。
+    """
     keep, drop = [], []
-    for s in segments:
-        (drop if _is_halluc(s, cfg) else keep).append(s)
+    ordered = sorted(segments, key=lambda x: float(x["start"]))
+    for i, s in enumerate(ordered):
+        nxt = float(ordered[i + 1]["start"]) if i + 1 < len(ordered) else None
+        (drop if _is_halluc(s, cfg, next_start=nxt) else keep).append(s)
     if drop and log_fn:
         sample = "；".join(f"{d['start']:.1f}-{d['end']:.1f}s「{d['text'][:20]}」" for d in drop[:3])
         log_fn(f"  [2/4 转写] 剔除 {len(drop)} 条疑似幻觉：{sample}")
@@ -605,6 +624,15 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
             segments = sorted(segments + extra, key=lambda s: float(s["start"]))
             for idx, s in enumerate(segments, 1):
                 s["id"] = idx
+
+        # 片头空档复核：小于 regap_min_sec 的片头不会被上面自动补回，但同样会丢句
+        # （088 是首句被幻觉规则误杀，补不回来的那种；这里只负责把它暴露出来）。
+        # 不自动补的原因：片头基本都是音乐前奏，2~8s 的小窗转写容易编出歌词/问候语，
+        # 自动写进 asr.json 比漏一句更难查。
+        head = float(segments[0]["start"]) if segments else 0.0
+        if head >= 2.0 and _loud(vocal, 0.0, head):
+            log_fn(f"  [2/4 转写] 警告：片头 0-{head:.1f}s 无字幕但检测到人声"
+                   f"（< regap_min_sec={min_sec:.0f}s 未自动补回），疑似漏识别，请听源音频复核")
 
     if not segments:
         raise RuntimeError("ASR 未识别到任何文本，请检查人声音轨（可能整段是 BGM 或被判为静音）")

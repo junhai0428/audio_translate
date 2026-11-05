@@ -274,6 +274,17 @@ pip install "tokenizers>=0.21,<1" -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 手工兜底：`tools/scan_asr.py` 列出所有 >4s 空档，逐个听源音频复核。
 
+**片头短段（必踩，2026-11-05）**：`_is_halluc` 的第 4 条会剔「片头 2 秒内的短段」，
+但只按 `nsp≥0.5 + 时长≤2.5s + start<2s` 判会**误杀真开场白**——`douyin_088` 首句
+`0.00-2.46s / nsp=0.99 / 「之前花大几十买的身体素颜霜可以直接退了」` 因此整句消失，
+配音轨开头空 2.5 秒。判据已补「孤立」要求：**下一段起点距本段结尾 >2 秒**才算幻觉，
+紧接下一句的一律放行；补空档时上下文未知（传 `next_start=None`）时不套用这一条。
+
+片头空档（`0 → 首段.start`）本来就纳入 `_gaps`，但小于 `regap_min_sec`（8s）不自动补回。
+**不自动补是有意的**：片头多是音乐前奏，2~8s 小窗转写容易编出歌词/问候语，写进 asr.json
+比漏一句更难查。改为在日志里告警「片头 0-X s 无字幕但检测到人声」，人工复核。
+回归测试：`python tests/test_asr_halluc.py`（覆盖 088 正例与 026 反例）。
+
 **性别判定**：用**声纹模型**——SpeechBrain ECAPA-TDNN 192 维说话人嵌入 + SVM
 （与 `voice-gender-classification` 同款权重，VoxCeleb2 训练、官方 98.9%），权重在
 `E:/Projects/whisper_env/models/{ecapa-voxceleb, gender_cls_svm_ecapa}`。推理取整条里
