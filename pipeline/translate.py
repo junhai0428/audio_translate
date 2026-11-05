@@ -239,6 +239,19 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
     if not asr or not asr.get("segments"):
         raise RuntimeError("缺少 Agent2 的 asr.json")
 
+    # 入口兜底：老产物可能残留 whisper 幻觉套话（"请不吝点赞…明镜与点点栏目"），
+    # 直接翻译会产出与原文完全无关的内容（026 实例）。拦在翻译前，提示重跑 ASR。
+    from .asr import halluc_segments
+    bad = halluc_segments(asr["segments"])
+    if bad:
+        sample = "；".join(
+            f"{float(b['start']):.1f}s「{(b.get('text') or '')[:20]}」" for b in bad[:2])
+        raise RuntimeError(
+            f"asr.json 含 {len(bad)} 条 whisper 幻觉套话（{sample}），"
+            "继续翻译会产出与原文无关的内容。请先重跑第 2 步："
+            "python run.py -i <素材> --stages 2 --force"
+        )
+
     total_dur = float(asr.get("duration") or 0) or (float(asr["segments"][-1]["end"]) + 0.5)
     # 先切超长句：ASR 常把整段口播并成一条 20 多秒的巨句，不切就没有句间槽位，配音无法对齐
     src_segs = split_long_segments(

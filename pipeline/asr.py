@@ -327,9 +327,10 @@ def _prompt_leaked(prompt: str, segments: list) -> bool:
 # whisper 在「纯音乐段」或「口播被 BGM 盖住」的段落上会吐固定套话
 # （中文 large-v3 最典型的是 YouTube 字幕组鸣谢）。这些词带货口播不会说，命中即判幻觉。
 _HALLUC_RE = re.compile(
-    r"请不吝点赞|点赞订阅|订阅转发|订阅频道|打赏支持|打赏|明镜与点点|字幕志愿者|字幕组|"
-    r"字幕由.{0,8}(提供|制作|翻译)|Amara\.org|优优独播|YoYo\s*Television|"
-    r"感谢观看|谢谢收看|本视频由.{0,10}制作",
+    r"请不吝点赞|點贊訂閱|订阅转发|订阅\s*转发|订阅频道|打赏支持|打赏|明镜与点点|点点栏目|"
+    r"請不吝點贊|明鏡與點點|點點欄目|打賞支持|訂閱\s*轉發|"
+    r"字幕志愿者|字幕组|字幕由.{0,8}(提供|制作|翻译)|Amara\.org|优优独播|YoYo\s*Television|"
+    r"感谢观看|谢谢收看|本视频由.{0,10}制作|優優獨播|獨播劇場|感謝觀看|謝謝收看",
     re.I,
 )
 
@@ -364,6 +365,16 @@ def _is_halluc(item: dict, cfg: dict | None = None) -> bool:
     if nsp >= 0.5 and dur <= 2.5 and float(item["start"]) < 2.0:
         return True
     return False
+
+
+def halluc_segments(segments: list, cfg: dict | None = None) -> list:
+    """筛出判定为幻觉的段。
+
+    ASR 自身的跳过分支、以及第 3 步（翻译）的入口都复用这里做兜底：
+    老产物若残留"请不吝点赞…明镜与点点栏目"这类套话，翻译出来就是与原文
+    完全无关的内容（026 的实例），必须在进入翻译前拦下来。
+    """
+    return [s for s in (segments or []) if _is_halluc(s, cfg)]
 
 
 # 句首幻觉套话：整条判定抓不到它，因为它和真口播被并成了同一条
@@ -531,8 +542,14 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
     if not force and out_json.exists():
         data = read_json(out_json)
         if data and data.get("segments"):
-            log_fn(f"  [2/4 转写] 已存在 {len(data['segments'])} 条字幕，跳过")
-            return data
+            bad = halluc_segments(data["segments"], cfg)
+            if bad:
+                sample = "；".join(
+                    f"{float(b['start']):.1f}s「{(b.get('text') or '')[:16]}」" for b in bad[:2])
+                log_fn(f"  [2/4 转写] 已有结果含 {len(bad)} 条幻觉套话（{sample}），判为无效，重跑转写")
+            else:
+                log_fn(f"  [2/4 转写] 已存在 {len(data['segments'])} 条字幕，跳过")
+                return data
 
     from faster_whisper import WhisperModel
 
