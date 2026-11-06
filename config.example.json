@@ -1,0 +1,114 @@
+{
+  "python_exe": "E:/Projects/whisper_env/Scripts/python.exe",
+  "dirs": {
+    "temp": "temp"
+  },
+  "media_roots": [
+    "E:/001.TTS/000视频素材"
+  ],
+  "threads": {
+    "omp": 4,
+    "whisper_cpu": 10
+  },
+  "hf_offline": true,
+  "separate": {
+    "demucs_model": "htdemucs",
+    "device": "cuda",
+    "jobs": 1,
+    "mp3_bitrate": "192k",
+    "other_method": "minus",
+    "keep_source_wav": false
+  },
+  "asr": {
+    "model": "E:/Projects/whisper_env/models/faster-whisper-large-v3",
+    "device": "cuda",
+    "compute_type": "float16",
+    "language": "zh",
+    "beam_size": 5,
+    "vad_filter": true,
+    "vad_min_silence_ms": 300,
+    "no_speech_threshold": 0.55,
+    "initial_prompt": "以下是普通话短视频口播内容，请用简体中文并加上标点。",
+    "word_timestamps": true,
+    "regap_min_sec": 8.0,
+    "regap_max_rounds": 3,
+    "regap_window_sec": 5.0,
+    "regap_hop_sec": 2.0,
+    "regap_no_speech": 0.4,
+    "regap_merge_gap": 0.4,
+    "regap_merge_span": 4.6,
+    "halluc_nsp": 0.6,
+    "halluc_min_density": 2.0,
+    "halluc_long_sec": 10.0,
+    "gender_model_root": "E:/Projects/whisper_env/models",
+    "gender_f0_threshold": 165,
+    "gender_f0_range": [
+      70,
+      350
+    ]
+  },
+  "translate": {
+    "enabled": true,
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "",
+    "api_key_env": [
+      "VIDTRANS_LLM_KEY",
+      "DEEPSEEK_API_KEY",
+      "OPENAI_API_KEY"
+    ],
+    "model": "deepseek-chat",
+    "temperature": 0.3,
+    "timeout": 180,
+    "max_retries": 3,
+    "batch_size": 25,
+    "vi_syllables_per_sec": 5.6,
+    "vi_max_ratio": 1.0,
+    "gap_use": 0.95,
+    "gap": 0.04,
+    "head_line": 0.08,
+    "shorten_rounds": 2
+  },
+  "tts": {
+    "voices": {
+      "female": "vi-VN-HoaiMyNeural",
+      "male": "vi-VN-NamMinhNeural"
+    },
+    "base_rate": "+65%",
+    "concurrency": 8,
+    "retries": 3,
+    "sample_rate": 44100,
+    "min_slot": 0.35,
+    "gap": 0.04,
+    "gap_use": 0.95,
+    "max_tempo": 1.45,
+    "min_fill": 0.95,
+    "max_slow": 1.5,
+    "slow_slot_cap": 8.0,
+    "resynth_threshold": 1.12,
+    "low_fill_warn": 0.35,
+    "clarity_boost": "+0Hz"
+  },
+  "run": {
+    "jobs": 1,
+    "stages": [
+      1,
+      2,
+      3,
+      4
+    ]
+  },
+  "audio_exts": [
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".aac",
+    ".flac",
+    ".ogg",
+    ".opus",
+    ".wma",
+    ".mp4",
+    ".mov",
+    ".mkv",
+    ".m4v"
+  ]
+}
