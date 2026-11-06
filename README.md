@@ -95,7 +95,8 @@
 ├── tools/export_bundle.py   从 temp 补齐交付 + 清理旧规范残留文件
 ├── tools/mksilent.py        无口播片写空译文（第 4 步出等长静音轨）
 ├── run.py                   批量调度（断点续跑、并行、心跳）
-├── config.json              全部参数（audio_exts / stages = 1..4 / media_roots）
+├── config.example.json      参数模板（audio_exts / stages = 1..4 / media_roots）
+├── config.json              本地实际配置（含 api_key，已 gitignore，不入库）
 ├── README.md                ← 本文档（唯一说明书）
 └── reports/                 分析报告（音节预算清单等，可随时删）
 ```
@@ -120,6 +121,16 @@
 工单名 = 素材文件基名（不带任何前缀）；`temp/` 归属各自素材目录，所以不同产品目录的 `douyin_051` 互不干扰。
 
 ## 五、快速开始
+
+首次使用先准备本地配置。`config.json` 里带 LLM 密钥，已加入 `.gitignore` 不入库，仓库里只提供模板：
+
+```bash
+cp config.example.json config.json
+# 然后编辑 config.json：
+#   translate.api_key  → 你的 LLM key（也可改用环境变量 VIDTRANS_LLM_KEY / DEEPSEEK_API_KEY）
+#   python_exe         → 装了 demucs / faster-whisper / edge-tts 的解释器
+#   media_roots        → 素材根目录
+```
 
 ```bash
 # 指定素材目录（整目录批量，temp/ 会被自动跳过）
