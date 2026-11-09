@@ -138,8 +138,27 @@ def run_stage(job: Job, logger=None, log_fn=log, force: bool = False) -> dict:
         run([FFMPEG, "-y", "-v", "error", "-i", str(out_wav),
              "-c:a", "libmp3lame", "-b:a", "192k", str(out_mp3)], quiet=True)
         shutil.copy2(out_mp3, job.deliverable)
+        # 静音片也要落 stats/manifest：不写的话上一轮（ASR 还是乱码那次）的统计会一直留着，
+        # 下游统计工具会把它当成"填充率 22% 的问题片"，实际它只是没有口播。
+        stats = {
+            "voice": None,
+            "gender": None,
+            "segments": 0,
+            "placed": 0,
+            "failed_ids": [],
+            "silent": True,
+            "avg_tempo": 1.0,
+            "max_tempo": 1.0,
+            "over_1_45": 0,
+            "avg_fill": 0.0,
+            "low_fill_ids": [],
+            "duration": round(media_duration(out_mp3), 3),
+            "target_duration": round(total_dur, 3),
+        }
+        write_json(job.path(STAGE, "tts_stats.json"), stats)
+        write_json(job.path(STAGE, "tts_manifest.json"), [])
         log_fn(f"  [4/4 配音] 交付（静音）：{job.deliverable}")
-        return {"voice": str(out_mp3), "duration": total_dur, "silent": True}
+        return {**stats, "voice": str(out_mp3)}
 
     gender = (data.get("gender") or {}).get("label") or "female"
     voice = cfg["voices"].get(gender) or cfg["voices"]["female"]
