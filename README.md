@@ -82,12 +82,16 @@
 
 ```
 音频翻译工具/
-├── .workbuddy/agents/
-│   ├── TEAM.md              协作协议（派单模板、交接契约、验收、并行策略）
-│   ├── 01-人声分离.md
-│   ├── 02-语音转写.md
-│   ├── 03-翻译控长.md
-│   └── 04-配音对齐.md
+├── .codebuddy/              CodeBuddy 项目结构（团队资产入库，本地产物不入库）
+│   ├── agents/              四步角色卡 + 协作协议
+│   │   ├── TEAM.md          协作协议（派单模板、交接契约、验收、并行策略）
+│   │   ├── 01-人声分离.md
+│   │   ├── 02-语音转写.md
+│   │   ├── 03-翻译控长.md
+│   │   └── 04-配音对齐.md
+│   ├── plans/               本地产出的 plan（已 gitignore，不入库）
+│   ├── rules/               项目硬约束（按需沉淀，官方约定路径）
+│   └── skills/              场景化技能包（按需沉淀，官方约定路径）
 ├── pipeline/                separate / asr / translate / tts
 ├── tools/step3_helper.py    第 3 步辅助：超长句切分 + 合稿算预算
 ├── tools/acceptance.py      调度验收：时长/峰值/起句对齐/字符残留
@@ -476,3 +480,10 @@ ffmpeg -y -i <无字幕视频> -i <vi_voice.mp3> -i <原BGM.mp3> \
 
 5. **新暴露**：`site-packages` 里有 `~orch`、`~orch-2.6.0+cu124.dist-info`、`~orchgen`、`~unctorch` 四个旧 torch 残留
    （pip 会打印 "Ignoring invalid distribution"），删除被环境安全策略拦截，需手动清理。
+6. **【TODO】逐句判男女，按句切换音色**（plan 已定稿、待实施，见 `.codebuddy/plans/2026-11-09-逐句性别判定.md`）：
+   现在一条工单只有一个性别、全片一个音色，男女对话/双人出镜的素材会被同一个声音盖掉。
+   - 第 2 步：对每个 ASR 段各做一次 ECAPA+SVM 判定，写 `segments[].gender`；短句（<0.6s）或低置信（<0.6）回退整片性别，**不做平滑**；
+   - 第 3 步：切句后按时间重叠继承（`_split_one` 只返回 `start/end/text`，父段字段必丢，必须重映射）；
+   - 第 4 步：按句查 `tts.voices` 选音色，manifest 逐句记 `gender`/`voice`，stats 增 `voice_counts`/`mixed_gender`；
+   - 开关 `asr.gender_per_segment`（默认开，关掉即回到现在的整片单音色）；只对新素材生效，存量 159 条不重跑；
+   - 落地顺序：`utils.assign_parent_gender` → `asr.detect_gender_per_segment` → `translate` 继承 → `tts` 按句选音色 → 配置/README → 测试 → commit。
